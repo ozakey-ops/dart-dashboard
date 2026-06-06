@@ -34,9 +34,11 @@ ACC = {
     "revenue":     ["매출액", "수익(매출액)", "영업수익", "매출", "총수익"],
     "opIncome":    ["영업이익", "영업이익(손실)", "영업손익"],
     "netIncome":   ["당기순이익", "당기순이익(손실)", "당기순손익"],
+    "retainedEarnings": ["이익잉여금", "이익잉여금(결손금)", "결손금"],
     "opCF":        ["영업활동으로 인한 현금흐름", "영업활동현금흐름"],
     "invCF":       ["투자활동으로 인한 현금흐름", "투자활동현금흐름"],
     "finCF":       ["재무활동으로 인한 현금흐름", "재무활동현금흐름"],
+    "endCash":     ["기말현금및현금성자산", "기말의현금및현금성자산", "현금및현금성자산의기말잔액"],
 }
 
 COLORS = {
@@ -194,15 +196,17 @@ def fetch_year(corp_code, year, fs_div):
             isl = [x for x in lst if x.get("sj_div") == "CIS"]
         cf  = [x for x in lst if x.get("sj_div") == "CF"]
         result = {
-            "bs": {"assets":      find_amount(bs,  ACC["assets"]),
-                   "liabilities": find_amount(bs,  ACC["liabilities"]),
-                   "equity":      find_amount(bs,  ACC["equity"])},
+            "bs": {"assets":           find_amount(bs,  ACC["assets"]),
+                   "liabilities":      find_amount(bs,  ACC["liabilities"]),
+                   "equity":           find_amount(bs,  ACC["equity"]),
+                   "retainedEarnings": find_amount(bs,  ACC["retainedEarnings"])},
             "is": {"revenue":   find_amount(isl, ACC["revenue"]),
                    "opIncome":  find_amount(isl, ACC["opIncome"]),
                    "netIncome": find_amount(isl, ACC["netIncome"])},
-            "cf": {"opCF":  find_amount(cf, ACC["opCF"]),
-                   "invCF": find_amount(cf, ACC["invCF"]),
-                   "finCF": find_amount(cf, ACC["finCF"])},
+            "cf": {"opCF":   find_amount(cf, ACC["opCF"]),
+                   "invCF":  find_amount(cf, ACC["invCF"]),
+                   "finCF":  find_amount(cf, ACC["finCF"]),
+                   "endCash": find_amount(cf, ACC["endCash"])},
         }
         has_data = any(v is not None for sec in result.values() for v in sec.values())
         return result if has_data else None
@@ -503,6 +507,7 @@ def main():
             er = pct(b.get("equity"), b.get("assets"))
             rows.append({"연도": y, "자산총계": fmt(b.get("assets")),
                          "부채총계": fmt(b.get("liabilities")), "자본총계": fmt(b.get("equity")),
+                         "이익잉여금": fmt(b.get("retainedEarnings")),
                          "부채비율": f"{dr:.1f}%" if dr else "-",
                          "자기자본비율": f"{er:.1f}%" if er else "-"})
         st.dataframe(rows, hide_index=True, use_container_width=True)
@@ -540,15 +545,20 @@ def main():
         fig = make_bar(years,
                        {"영업활동": [data[y]["cf"].get("opCF")  for y in years],
                         "투자활동": [data[y]["cf"].get("invCF") for y in years],
-                              "재무활동": [data[y]["cf"].get("finCF") for y in years]},
+                        "재무활동": [data[y]["cf"].get("finCF") for y in years]},
                        "현금흐름 추이 (억원)")
         st.plotly_chart(fig, use_container_width=True)
+        fig2 = make_line(years,
+                         {"기말현금및현금성자산": [data[y]["cf"].get("endCash") for y in years]},
+                         "기말현금및현금성자산 추이 (억원)")
+        st.plotly_chart(fig2, use_container_width=True)
 
         rows = []
         for y in years:
             c = data[y]["cf"]
             rows.append({"연도": y, "영업활동": fmt(c.get("opCF")),
-                         "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF"))})
+                         "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF")),
+                         "기말현금": fmt(c.get("endCash"))})
         st.dataframe(rows, hide_index=True, use_container_width=True)
 
     # ── 최신 뉴스 ──
@@ -568,7 +578,7 @@ def main():
                           box-shadow:0 1px 3px rgba(0,0,0,.05);">
                 <div style="font-size:.88rem;font-weight:600;color:#1e293b;
                             line-height:1.4;margin-bottom:5px;">{n['title']}</div>
-                <div style="display:flex;gap:10px;align-items:center;">
+                               <div style="display:flex;gap:10px;align-items:center;">
                   <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
                   <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
                 </div>
