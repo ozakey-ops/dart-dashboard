@@ -553,6 +553,10 @@ def main():
                             "부채비율 & 자기자본비율", is_pct=True)
             st.plotly_chart(fig, use_container_width=True)
 
+        re_data = {"이익잉여금": [data[y]["bs"].get("retainedEarnings") for y in years]}
+        fig_re = make_line(years, re_data, "이익잉여금 추이 (억원)")
+        st.plotly_chart(fig_re, use_container_width=True)
+
         rows = []
         for y in years:
             b = data[y]["bs"]
@@ -595,12 +599,18 @@ def main():
 
     # 현금흐름표
     with tab_cf:
-        fig = make_bar(years,
-                       {"영업활동": [data[y]["cf"].get("opCF")  for y in years],
-                        "투자활동": [data[y]["cf"].get("invCF") for y in years],
-                        "재무활동": [data[y]["cf"].get("finCF") for y in years]},
-                       "현금흐름 추이 (억원)")
-        st.plotly_chart(fig, use_container_width=True)
+        cf1, cf2 = st.columns(2)
+        with cf1:
+            fig = make_bar(years,
+                           {"영업활동": [data[y]["cf"].get("opCF")  for y in years],
+                            "투자활동": [data[y]["cf"].get("invCF") for y in years],
+                            "재무활동": [data[y]["cf"].get("finCF") for y in years]},
+                           "현금흐름 추이 (억원)")
+            st.plotly_chart(fig, use_container_width=True)
+        with cf2:
+            ec_data = {"기말현금및현금성자산": [data[y]["cf"].get("endCash") for y in years]}
+            fig_ec = make_line(years, ec_data, "기말현금및현금성자산 추이 (억원)")
+            st.plotly_chart(fig_ec, use_container_width=True)
 
         rows = []
         for y in years:
@@ -640,4 +650,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
