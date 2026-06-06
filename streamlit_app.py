@@ -104,23 +104,69 @@ def clean(s):
     return (s or "").replace(" ", "")
 
 
+def parse_amt(item):
+    try:
+        return round(int(item.get("thstrm_amount", "").replace(",", "")) / 1e8)
+    except Exception:
+        return None
+
 def find_amount(items, keys):
+    """계정과목 검색: 1) 완전일치 → 2) 키가 계정명 안에 있음 → 3) 계정명이 키 안에 있음"""
     for key in keys:
         kc = clean(key)
         for item in items:
             if clean(item.get("account_nm", "")) == kc:
-                try:
-                    return round(int(item.get("thstrm_amount", "").replace(",", "")) / 1e8)
-                except Exception:
-                    pass
+                v = parse_amt(item)
+                if v is not None: return v
     for key in keys:
         kc = clean(key)
         for item in items:
-            if kc in clean(item.get("account_nm", "")):
-                try:
-                    return round(int(item.get("thstrm_amount", "").replace(",", "")) / 1e8)
-                except Exception:
-                    pass
+            nm = clean(item.get("account_nm", ""))
+            if kc in nm or nm in kc:   # ← 양방향 포함 검색
+                v = parse_amt(item)
+                if v is not None: return v
+    return None
+
+def find_retained_earnings(bs_items):
+    """이익잉여금 전용 검색 — '이익잉여금' 포함 계정 우선, 없으면 '결손금' 계정"""
+    # 1단계: 기존 키 리스트 검색
+    r = find_amount(bs_items, ACC["retainedEarnings"])
+    if r is not None: return r
+    # 2단계: 계정명에 '이익잉여금' 포함된 항목 직접 탐색
+    for item in bs_items:
+        nm = clean(item.get("account_nm", ""))
+        if "이익잉여금" in nm:
+            v = parse_amt(item)
+            if v is not None: return v
+    # 3단계: '결손금' 포함 항목
+    for item in bs_items:
+        nm = clean(item.get("account_nm", ""))
+        if "결손금" in nm:
+            v = parse_amt(item)
+            if v is not None: return v
+    return None
+
+def find_end_cash(cf_items):
+    """기말현금및현금성자산 전용 검색"""
+    # 1단계: 기존 키 리스트 검색
+    r = find_amount(cf_items, ACC["endCash"])
+    if r is not None: return r
+    # 2단계: '기말' + '현금' 동시 포함 항목 탐색
+    for item in cf_items:
+        nm = clean(item.get("account_nm", ""))
+        if "기말" in nm and "현금" in nm:
+            v = parse_amt(item)
+            if v is not None: return v
+    # 3단계: '현금및현금성자산' + 마지막 항목 (CF의 맨 끝 현금 잔액)
+    candidates = []
+    for item in cf_items:
+        nm = clean(item.get("account_nm", ""))
+        if "현금및현금성자산" in nm:
+            v = parse_amt(item)
+            if v is not None: candidates.append((nm, v))
+    # 마지막에 등장하는 '현금및현금성자산' 항목이 기말 잔액일 가능성이 높음
+    if candidates:
+        return candidates[-1][1]
     return None
 
 
@@ -199,14 +245,14 @@ def fetch_year(corp_code, year, fs_div):
             "bs": {"assets":           find_amount(bs,  ACC["assets"]),
                    "liabilities":      find_amount(bs,  ACC["liabilities"]),
                    "equity":           find_amount(bs,  ACC["equity"]),
-                   "retainedEarnings": find_amount(bs,  ACC["retainedEarnings"])},
+                   "retainedEarnings": find_retained_earnings(bs)},
             "is": {"revenue":   find_amount(isl, ACC["revenue"]),
                    "opIncome":  find_amount(isl, ACC["opIncome"]),
                    "netIncome": find_amount(isl, ACC["netIncome"])},
             "cf": {"opCF":   find_amount(cf, ACC["opCF"]),
                    "invCF":  find_amount(cf, ACC["invCF"]),
                    "finCF":  find_amount(cf, ACC["finCF"]),
-                   "endCash": find_amount(cf, ACC["endCash"])},
+                   "endCash": find_end_cash(cf)},
         }
         has_data = any(v is not None for sec in result.values() for v in sec.values())
         return result if has_data else None
@@ -579,6 +625,47 @@ def main():
                 <div style="font-size:.88rem;font-weight:600;color:#1e293b;
                             line-height:1.4;margin-bottom:5px;">{n['title']}</div>
                                <div style="display:flex;gap:10px;align-items:center;">
+                  <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
+                  <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
+                </div>
+              </div>
+            </a>
+            """, unsafe_allow_html=True)
+
+    st.caption(f"데이터: 금융감독원 전자공시(DART) · 뉴스: Google News · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+
+if __name__ == "__main__":
+    main()
+                         "기말현금및현금성자산 추이 (억원)")
+        st.plotly_chart(fig2, use_container_width=True)
+
+        rows = []
+        for y in years:
+            c = data[y]["cf"]
+            rows.append({"연도": y, "영업활동": fmt(c.get("opCF")),
+                         "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF")),
+                         "기말현금": fmt(c.get("endCash"))})
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+
+    # ── 최신 뉴스 ──
+    st.divider()
+    st.markdown("#### 📰 최신 뉴스")
+    with st.spinner("뉴스 검색 중..."):
+        news_list = fetch_news(corp["corp_name"])
+
+    if not news_list:
+        st.info("뉴스를 불러올 수 없습니다.")
+    else:
+        for n in news_list:
+            st.markdown(f"""
+            <a href="{n['link']}" target="_blank" style="text-decoration:none;">
+              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
+                          padding:12px 16px;margin-bottom:8px;
+                          box-shadow:0 1px 3px rgba(0,0,0,.05);">
+                <div style="font-size:.88rem;font-weight:600;color:#1e293b;
+                            line-height:1.4;margin-bottom:5px;">{n['title']}</div>
+                <div style="display:flex;gap:10px;align-items:center;">
                   <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
                   <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
                 </div>
