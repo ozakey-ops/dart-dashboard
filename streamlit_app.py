@@ -34,12 +34,19 @@ ACC = {
     "revenue":     ["매출액", "수익(매출액)", "영업수익", "매출", "총수익"],
     "opIncome":    ["영업이익", "영업이익(손실)", "영업손익"],
     "netIncome":   ["당기순이익", "당기순이익(손실)", "당기순손익"],
-    "retainedEarnings": ["이익잉여금", "이익잉여금(결손금)", "결손금"],
+    # ↓ DART 실제 계정명 기준 (이미지에서 확인)
+    "retainedEarnings": ["이익잉여금(결손금)", "이익잉여금", "결손금",
+                         "미처분이익잉여금", "미처리결손금"],
     "opCF":        ["영업활동으로 인한 현금흐름", "영업활동현금흐름"],
     "invCF":       ["투자활동으로 인한 현금흐름", "투자활동현금흐름"],
     "finCF":       ["재무활동으로 인한 현금흐름", "재무활동현금흐름"],
-    "endCash":     ["기말현금및현금성자산", "기말의현금및현금성자산", "현금및현금성자산의기말잔액"],
+    # ↓ DART 실제 계정명 기준 (이미지에서 확인)
+    "endCash":     ["기말현금및현금성자산", "기말의현금및현금성자산",
+                    "현금및현금성자산의기말잔액", "기말현금및현금성자산잔액"],
 }
+
+# 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
+_CACHE_VER = 3
 
 COLORS = {
     "blue":   "#2563eb",
@@ -215,7 +222,7 @@ def search_corps(name, all_corps):
 # ─── 재무데이터 ───
 
 @st.cache_data(ttl=3600, show_spinner=False)   # 1시간 캐시
-def fetch_all_years(corp_code, fs_div):
+def fetch_all_years(corp_code, fs_div, _ver=_CACHE_VER):  # _ver 변경 시 캐시 무효화
     all_data = {}
     for year in YEARS:
         d = fetch_year(corp_code, year, fs_div)
@@ -667,6 +674,18 @@ if __name__ == "__main__":
                             line-height:1.4;margin-bottom:5px;">{n['title']}</div>
                 <div style="display:flex;gap:10px;align-items:center;">
                   <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
+                  <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
+                </div>
+              </div>
+            </a>
+            """, unsafe_allow_html=True)
+
+    st.caption(f"데이터: 금융감독원 전자공시(DART) · 뉴스: Google News · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+
+if __name__ == "__main__":
+    main()
+eb;font-weight:500;">{n['source']}</span>
                   <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
                 </div>
               </div>
