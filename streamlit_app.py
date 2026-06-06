@@ -601,9 +601,8 @@ def main():
                         "재무활동": [data[y]["cf"].get("finCF") for y in years]},
                        "현금흐름 추이 (억원)")
         st.plotly_chart(fig, use_container_width=True)
-        fig2 = make_line(years,
-                         {"기말현금및현금성자산": [data[y]["cf"].get("endCash") for y in years]},
-                         "기말현금및현금성자산 추이 (억원)")
+        end_cash_data = {"기말현금및현금성자산": [data[y]["cf"].get("endCash") for y in years]}
+        fig2 = make_line(years, end_cash_data, "기말현금및현금성자산 추이 (억원)")
         st.plotly_chart(fig2, use_container_width=True)
 
         rows = []
