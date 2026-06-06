@@ -555,7 +555,7 @@ def main():
     st.divider()
     st.markdown("#### 📰 최신 뉴스")
     with st.spinner("뉴스 검색 중..."):
-        news_list = fetch_news(corp_name)
+        news_list = fetch_news(corp["corp_name"])
 
     if not news_list:
         st.info("뉴스를 불러올 수 없습니다.")
