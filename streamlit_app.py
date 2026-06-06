@@ -40,12 +40,12 @@ ACC = {
 }
 
 COLORS = {
-    "blue":   "#4d90f0",
-    "red":    "#f85149",
-    "green":  "#3fb950",
-    "orange": "#f0883e",
-    "purple": "#bc8cff",
-    "yellow": "#d29922",
+    "blue":   "#2563eb",
+    "red":    "#dc2626",
+    "green":  "#16a34a",
+    "orange": "#ea580c",
+    "purple": "#7c3aed",
+    "yellow": "#ca8a04",
 }
 
 # ─── 페이지 설정 ───
@@ -65,27 +65,33 @@ st.markdown("""
   #MainMenu                          { display:none !important; }
   footer                             { display:none !important; }
 
-  /* 배경 & 기본 색상 */
-  [data-testid="stAppViewContainer"] { background:#0d1117; color:#cdd9e5; }
-  [data-testid="stSidebar"]          { background:#161b26; }
+  /* 배경 & 기본 색상 — 라이트 테마 */
+  [data-testid="stAppViewContainer"] { background:#f8fafc; color:#1e293b; }
+  [data-testid="stSidebar"]          { background:#f1f5f9; }
+  body                               { background:#f8fafc; }
 
-  /* 상단 여백 제거 — 커스텀 헤더가 최상단에 오도록 */
+  /* 상단 여백 제거 */
   .block-container                   { padding-top:0 !important; padding-bottom:1rem; max-width:1200px; }
   .appview-container                 { padding-top:0 !important; }
 
-  h1,h2,h3                           { color:#cdd9e5 !important; }
-  .stTextInput input                 { background:#1c2333; color:#cdd9e5; border:1px solid #273047; border-radius:8px; }
-  .stButton button                   { background:#4d90f0; color:#fff; border:none; border-radius:8px; width:100%; font-weight:600; }
-  .stButton button:hover             { background:#3a7de0; }
-  .metric-card                       { background:#161b26; border:1px solid #273047; border-radius:12px; padding:14px 16px; margin-bottom:8px; }
-  .metric-label                      { font-size:.72rem; color:#768390; margin-bottom:4px; }
-  .metric-value                      { font-size:1.15rem; font-weight:700; color:#cdd9e5; }
+  h1,h2,h3                           { color:#1e293b !important; }
+  .stTextInput input                 { background:#fff; color:#1e293b; border:1px solid #cbd5e1; border-radius:8px; }
+  .stTextInput input:focus           { border-color:#2563eb; box-shadow:0 0 0 2px rgba(37,99,235,.15); }
+  .stButton button                   { background:#2563eb; color:#fff; border:none; border-radius:8px; width:100%; font-weight:600; }
+  .stButton button:hover             { background:#1d4ed8; }
+  .metric-card                       { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px 16px; margin-bottom:8px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .metric-label                      { font-size:.72rem; color:#64748b; margin-bottom:4px; }
+  .metric-value                      { font-size:1.15rem; font-weight:700; color:#1e293b; }
   .metric-delta                      { font-size:.72rem; margin-top:3px; }
-  .up   { color:#3fb950; }
-  .down { color:#f85149; }
-  .flat { color:#768390; }
-  div[data-testid="stSelectbox"] select { background:#1c2333; color:#cdd9e5; }
-  .stDataFrame                        { border:1px solid #273047; border-radius:8px; }
+  .up   { color:#16a34a; }
+  .down { color:#dc2626; }
+  .flat { color:#64748b; }
+  div[data-testid="stSelectbox"] > div { background:#fff; border:1px solid #cbd5e1; border-radius:8px; }
+  .stDataFrame                        { border:1px solid #e2e8f0; border-radius:8px; background:#fff; }
+  [data-testid="stTab"]              { color:#64748b; }
+  [data-testid="stTab"][aria-selected="true"] { color:#2563eb; border-bottom-color:#2563eb; }
+  .stCaption                         { color:#64748b; }
+  div[data-baseweb="tab-highlight"]  { background:#2563eb !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -204,15 +210,52 @@ def fetch_year(corp_code, year, fs_div):
         return None
 
 
+# ─── 뉴스 ───
+
+@st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
+def fetch_news(company_name, count=5):
+    """Google News RSS로 최신 뉴스 수집."""
+    try:
+        import urllib.parse
+        query = urllib.parse.quote(company_name)
+        url = f"https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=8)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        items = root.findall(".//item")[:count]
+        news = []
+        for item in items:
+            title = item.findtext("title", "").strip()
+            link  = item.findtext("link",  "").strip()
+            pub   = item.findtext("pubDate", "").strip()
+            src   = item.findtext("source", "").strip()
+            # 제목에서 언론사 제거 ("제목 - 언론사" 형태)
+            if " - " in title:
+                title, src = title.rsplit(" - ", 1)
+            # 날짜 파싱
+            try:
+                from email.utils import parsedate_to_datetime
+                dt = parsedate_to_datetime(pub)
+                pub_fmt = dt.strftime("%m/%d %H:%M")
+            except Exception:
+                pub_fmt = pub[:16] if pub else ""
+            news.append({"title": title.strip(), "link": link,
+                         "source": src.strip(), "date": pub_fmt})
+        return news
+    except Exception:
+        return []
+
+
 # ─── 차트 ───
 
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#768390", size=11),
-    xaxis=dict(gridcolor="#273047", tickfont=dict(color="#768390")),
-    yaxis=dict(gridcolor="#273047", tickfont=dict(color="#768390")),
-    legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#cdd9e5", size=11)),
+    plot_bgcolor="rgba(248,250,252,1)",
+    font=dict(color="#64748b", size=11),
+    xaxis=dict(gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+    yaxis=dict(gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+    legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#1e293b", size=11)),
     margin=dict(l=10, r=10, t=30, b=10),
     height=280,
 )
@@ -303,16 +346,17 @@ def main():
     # 헤더 (스티키 — 스크롤해도 상단 고정)
     st.markdown("""
     <div style="position:sticky;top:0;z-index:999;
-                background:linear-gradient(90deg,#0d1117,#161b26);
-                border-bottom:1px solid #273047;
+                background:#fff;
+                border-bottom:1px solid #e2e8f0;
+                box-shadow:0 1px 4px rgba(0,0,0,.06);
                 padding:14px 20px;margin:-1rem -1rem 1.2rem -1rem;
                 display:flex;align-items:center;gap:12px;">
       <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;
-                  background:linear-gradient(135deg,#4d90f0,#bc8cff);
+                  background:linear-gradient(135deg,#2563eb,#7c3aed);
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
-        <div style="font-size:1.15rem;font-weight:700;color:#cdd9e5;line-height:1.2;">DART 재무 대시보드</div>
-        <div style="font-size:.72rem;color:#768390;margin-top:2px;">전자공시 OpenAPI · 10년 재무제표 분석</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">DART 재무 대시보드</div>
+        <div style="font-size:.72rem;color:#64748b;margin-top:2px;">전자공시 OpenAPI · 10년 재무제표 분석</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -372,13 +416,14 @@ def main():
 
     # 재무데이터 로드
     st.markdown(f"""
-    <div style="background:#161b26;border:1px solid #273047;border-radius:12px;
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+                box-shadow:0 1px 3px rgba(0,0,0,.06);
                 padding:12px 18px;margin:12px 0;display:flex;align-items:center;gap:12px;">
-      <div style="background:linear-gradient(135deg,#4d90f0,#bc8cff);border-radius:8px;
-                  padding:4px 12px;font-weight:700;">{corp['corp_name'][:2]}</div>
+      <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
+                  padding:4px 12px;font-weight:700;color:#fff;">{corp['corp_name'][:2]}</div>
       <div>
-        <div style="font-weight:700;color:#cdd9e5;">{corp['corp_name']}</div>
-        <div style="font-size:.72rem;color:#768390;">코드: {corp['corp_code']}
+        <div style="font-weight:700;color:#1e293b;">{corp['corp_name']}</div>
+        <div style="font-size:.72rem;color:#64748b;">코드: {corp['corp_code']}
           {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}</div>
       </div>
     </div>
@@ -506,7 +551,32 @@ def main():
                          "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF"))})
         st.dataframe(rows, hide_index=True, use_container_width=True)
 
-    st.caption(f"데이터: 금융감독원 전자공시(DART) · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    # ── 최신 뉴스 ──
+    st.divider()
+    st.markdown("#### 📰 최신 뉴스")
+    with st.spinner("뉴스 검색 중..."):
+        news_list = fetch_news(corp_name)
+
+    if not news_list:
+        st.info("뉴스를 불러올 수 없습니다.")
+    else:
+        for n in news_list:
+            st.markdown(f"""
+            <a href="{n['link']}" target="_blank" style="text-decoration:none;">
+              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
+                          padding:12px 16px;margin-bottom:8px;
+                          box-shadow:0 1px 3px rgba(0,0,0,.05);">
+                <div style="font-size:.88rem;font-weight:600;color:#1e293b;
+                            line-height:1.4;margin-bottom:5px;">{n['title']}</div>
+                <div style="display:flex;gap:10px;align-items:center;">
+                  <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
+                  <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
+                </div>
+              </div>
+            </a>
+            """, unsafe_allow_html=True)
+
+    st.caption(f"데이터: 금융감독원 전자공시(DART) · 뉴스: Google News · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 
 if __name__ == "__main__":
