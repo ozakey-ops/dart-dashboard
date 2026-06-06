@@ -418,7 +418,7 @@ def main():
     # 검색 영역
     col1, col2 = st.columns([4, 1])
     with col1:
-        query = st.text_input("", placeholder="예: 삼성전자",
+        query = st.text_input("", placeholder="회사명 입력 (예: 삼성전자)",
                               label_visibility="collapsed", key="query")
     with col2:
         search_btn = st.button("🔍 검색")
