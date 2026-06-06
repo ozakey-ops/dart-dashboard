@@ -8,10 +8,8 @@ DART 재무 대시보드 — Streamlit 모바일 웹앱
 
 import streamlit as st
 import requests
-import json
 import zipfile
 import io
-import os
 import xml.etree.ElementTree as ET
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -25,7 +23,6 @@ DART_KEY = "901de77da059b85e095a99ab9f2baf3264f7281f"
 
 BASE       = "https://opendart.fss.or.kr/api"
 YEARS      = list(range(2016, 2026))
-CACHE_FILE = "dart_corpcode_cache.xml"
 
 ACC = {
     "assets":      ["자산총계"],
@@ -421,7 +418,7 @@ def main():
     # 검색 영역
     col1, col2 = st.columns([4, 1])
     with col1:
-        query = st.text_input("", placeholder="회사명 입력 (예: 삼성전자, LG전자, 주성엔지니어링)",
+        query = st.text_input("", placeholder="예: 삼성전자",
                               label_visibility="collapsed", key="query")
     with col2:
         search_btn = st.button("🔍 검색")
