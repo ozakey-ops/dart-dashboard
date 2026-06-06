@@ -601,9 +601,6 @@ def main():
                         "재무활동": [data[y]["cf"].get("finCF") for y in years]},
                        "현금흐름 추이 (억원)")
         st.plotly_chart(fig, use_container_width=True)
-        end_cash_data = {"기말현금및현금성자산": [data[y]["cf"].get("endCash") for y in years]}
-        fig2 = make_line(years, end_cash_data, "기말현금및현금성자산 추이 (억원)")
-        st.plotly_chart(fig2, use_container_width=True)
 
         rows = []
         for y in years:
@@ -643,56 +640,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                         "기말현금및현금성자산 추이 (억원)")
-        st.plotly_chart(fig2, use_container_width=True)
 
-        rows = []
-        for y in years:
-            c = data[y]["cf"]
-            rows.append({"연도": y, "영업활동": fmt(c.get("opCF")),
-                         "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF")),
-                         "기말현금": fmt(c.get("endCash"))})
-        st.dataframe(rows, hide_index=True, use_container_width=True)
-
-    # ── 최신 뉴스 ──
-    st.divider()
-    st.markdown("#### 📰 최신 뉴스")
-    with st.spinner("뉴스 검색 중..."):
-        news_list = fetch_news(corp["corp_name"])
-
-    if not news_list:
-        st.info("뉴스를 불러올 수 없습니다.")
-    else:
-        for n in news_list:
-            st.markdown(f"""
-            <a href="{n['link']}" target="_blank" style="text-decoration:none;">
-              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
-                          padding:12px 16px;margin-bottom:8px;
-                          box-shadow:0 1px 3px rgba(0,0,0,.05);">
-                <div style="font-size:.88rem;font-weight:600;color:#1e293b;
-                            line-height:1.4;margin-bottom:5px;">{n['title']}</div>
-                <div style="display:flex;gap:10px;align-items:center;">
-                  <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
-                  <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
-                </div>
-              </div>
-            </a>
-            """, unsafe_allow_html=True)
-
-    st.caption(f"데이터: 금융감독원 전자공시(DART) · 뉴스: Google News · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-
-if __name__ == "__main__":
-    main()
-eb;font-weight:500;">{n['source']}</span>
-                  <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
-                </div>
-              </div>
-            </a>
-            """, unsafe_allow_html=True)
-
-    st.caption(f"데이터: 금융감독원 전자공시(DART) · 뉴스: Google News · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-
-if __name__ == "__main__":
-    main()
