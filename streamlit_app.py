@@ -59,10 +59,20 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* Streamlit 기본 헤더/툴바 숨김 */
+  [data-testid="stHeader"]           { display:none !important; }
+  [data-testid="stToolbar"]          { display:none !important; }
+  #MainMenu                          { display:none !important; }
+  footer                             { display:none !important; }
+
+  /* 배경 & 기본 색상 */
   [data-testid="stAppViewContainer"] { background:#0d1117; color:#cdd9e5; }
-  [data-testid="stHeader"]           { background:#161b26; border-bottom:1px solid #273047; }
   [data-testid="stSidebar"]          { background:#161b26; }
-  .block-container                   { padding-top:1.5rem; padding-bottom:1rem; }
+
+  /* 상단 여백 제거 — 커스텀 헤더가 최상단에 오도록 */
+  .block-container                   { padding-top:0 !important; padding-bottom:1rem; max-width:1200px; }
+  .appview-container                 { padding-top:0 !important; }
+
   h1,h2,h3                           { color:#cdd9e5 !important; }
   .stTextInput input                 { background:#1c2333; color:#cdd9e5; border:1px solid #273047; border-radius:8px; }
   .stButton button                   { background:#4d90f0; color:#fff; border:none; border-radius:8px; width:100%; font-weight:600; }
@@ -76,7 +86,6 @@ st.markdown("""
   .flat { color:#768390; }
   div[data-testid="stSelectbox"] select { background:#1c2333; color:#cdd9e5; }
   .stDataFrame                        { border:1px solid #273047; border-radius:8px; }
-  footer                              { display:none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -291,15 +300,19 @@ def kpi_card(label, cur, prev, is_pct=False, invert=False):
 # ─── 메인 UI ───
 
 def main():
-    # 헤더
+    # 헤더 (스티키 — 스크롤해도 상단 고정)
     st.markdown("""
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:1rem;">
-      <div style="width:38px;height:38px;border-radius:10px;
+    <div style="position:sticky;top:0;z-index:999;
+                background:linear-gradient(90deg,#0d1117,#161b26);
+                border-bottom:1px solid #273047;
+                padding:14px 20px;margin:-1rem -1rem 1.2rem -1rem;
+                display:flex;align-items:center;gap:12px;">
+      <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;
                   background:linear-gradient(135deg,#4d90f0,#bc8cff);
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
-        <div style="font-size:1.2rem;font-weight:700;color:#cdd9e5;">DART 재무 대시보드</div>
-        <div style="font-size:.72rem;color:#768390;">전자공시 OpenAPI · 10년 재무제표 분석</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#cdd9e5;line-height:1.2;">DART 재무 대시보드</div>
+        <div style="font-size:.72rem;color:#768390;margin-top:2px;">전자공시 OpenAPI · 10년 재무제표 분석</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -482,7 +495,7 @@ def main():
         fig = make_bar(years,
                        {"영업활동": [data[y]["cf"].get("opCF")  for y in years],
                         "투자활동": [data[y]["cf"].get("invCF") for y in years],
-                        "재무활동": [data[y]["cf"].get("finCF") for y in years]},
+                              "재무활동": [data[y]["cf"].get("finCF") for y in years]},
                        "현금흐름 추이 (억원)")
         st.plotly_chart(fig, use_container_width=True)
 
