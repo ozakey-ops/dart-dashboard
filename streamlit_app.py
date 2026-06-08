@@ -22,7 +22,7 @@ DART_KEY = "901de77da059b85e095a99ab9f2baf3264f7281f"
 # ══════════════════════════════════════════
 
 BASE       = "https://opendart.fss.or.kr/api"
-YEARS      = list(range(2016, 2026))
+YEARS      = list(range(2011, 2026))
 
 ACC = {
     "assets":      ["자산총계"],
@@ -43,7 +43,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 3
+_CACHE_VER = 4
 
 COLORS = {
     "blue":   "#2563eb",
@@ -264,6 +264,44 @@ def fetch_year(corp_code, year, fs_div):
         return None
 
 
+# ─── 공시 ───
+
+@st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
+def fetch_disclosures(corp_code, count=5):
+    """DART 공시 목록 최신 5건 조회."""
+    try:
+        r = requests.get(
+            f"{BASE}/list.json",
+            params={
+                "crtfc_key": DART_KEY,
+                "corp_code": corp_code,
+                "page_count": count,
+                "page_no": 1,
+            },
+            timeout=10,
+        )
+        d = r.json()
+        if d.get("status") != "000" or not d.get("list"):
+            return []
+        result = []
+        for item in d["list"][:count]:
+            rcept_dt = item.get("rcept_dt", "")
+            # YYYYMMDD → YYYY-MM-DD
+            if len(rcept_dt) == 8:
+                rcept_dt = f"{rcept_dt[:4]}-{rcept_dt[4:6]}-{rcept_dt[6:]}"
+            rcept_no = item.get("rcept_no", "")
+            link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}" if rcept_no else ""
+            result.append({
+                "report_nm": item.get("report_nm", "").strip(),
+                "flr_nm":    item.get("flr_nm", "").strip(),
+                "rcept_dt":  rcept_dt,
+                "link":      link,
+            })
+        return result
+    except Exception:
+        return []
+
+
 # ─── 뉴스 ───
 
 @st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
@@ -410,7 +448,7 @@ def main():
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
         <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">DART 재무 대시보드</div>
-        <div style="font-size:.72rem;color:#64748b;margin-top:2px;">전자공시 OpenAPI · 10년 재무제표 분석</div>
+        <div style="font-size:.72rem;color:#64748b;margin-top:2px;">전자공시 OpenAPI · 15년 재무제표 분석</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -434,7 +472,7 @@ def main():
         <div style="text-align:center;padding:3rem;color:#768390;">
           <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
           <div>회사명을 입력하고 검색하세요</div>
-          <div style="font-size:.8rem;margin-top:.5rem;">10년치 재무제표를 자동으로 불러옵니다</div>
+          <div style="font-size:.8rem;margin-top:.5rem;">15년치 재무제표를 자동으로 불러옵니다</div>
         </div>
         """, unsafe_allow_html=True)
         return
@@ -485,7 +523,7 @@ def main():
 
     cache_key = f"{corp['corp_code']}_data"
     if cache_key not in st.session_state or st.session_state.get(cache_key + "_corp") != corp["corp_code"]:
-        with st.spinner(f"{corp['corp_name']} 10년 재무데이터 수집 중..."):
+        with st.spinner(f"{corp['corp_name']} 15년 재무데이터 수집 중..."):
             data = fetch_all_years(corp["corp_code"], "CFS")
             if not data:
                 data = fetch_all_years(corp["corp_code"], "OFS")
@@ -616,6 +654,36 @@ def main():
                          "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF")),
                          "기말현금": fmt(c.get("endCash"))})
         st.dataframe(rows, hide_index=True, use_container_width=True)
+
+    # ── 최신 공시 ──
+    st.divider()
+    st.markdown("#### 📋 최근 공시 (DART)")
+    with st.spinner("공시 목록 조회 중..."):
+        disc_list = fetch_disclosures(corp["corp_code"])
+
+    if not disc_list:
+        st.info("공시 정보를 불러올 수 없습니다.")
+    else:
+        for d in disc_list:
+            link_html = f'href="{d["link"]}" target="_blank"' if d["link"] else ""
+            st.markdown(f"""
+            <a {link_html} style="text-decoration:none;">
+              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
+                          padding:11px 16px;margin-bottom:7px;
+                          box-shadow:0 1px 3px rgba(0,0,0,.05);
+                          display:flex;align-items:center;gap:12px;">
+                <div style="width:6px;height:6px;border-radius:50%;background:#2563eb;flex-shrink:0;margin-top:2px;"></div>
+                <div style="flex:1;">
+                  <div style="font-size:.88rem;font-weight:600;color:#1e293b;line-height:1.4;">{d['report_nm']}</div>
+                  <div style="display:flex;gap:10px;margin-top:4px;">
+                    <span style="font-size:.72rem;color:#64748b;">{d['flr_nm']}</span>
+                    <span style="font-size:.72rem;color:#94a3b8;">{d['rcept_dt']}</span>
+                  </div>
+                </div>
+                <div style="font-size:.75rem;color:#2563eb;flex-shrink:0;">→</div>
+              </div>
+            </a>
+            """, unsafe_allow_html=True)
 
     # ── 최신 뉴스 ──
     st.divider()
