@@ -1380,7 +1380,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         # ────────────────────────────────────
         _section_header("연도별 시가총액 추이")
         with st.spinner("시가총액 데이터 조회 중..."):
-            cap_data = fetch_market_cap_history(stock_code, corp_cls)
+            cap_data = fetch_market_cap_history(stock_code, corp_cls, _ver=_CACHE_VER)
         if cap_data.get("__error__"):
             st.caption(f"오류: {cap_data['__error__']}")
         elif cap_data:
@@ -1466,7 +1466,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         # ────────────────────────────────────
         _section_header("밸류에이션 추이 (월별 PER · PBR · DIV)")
         with st.spinner("밸류에이션 데이터 조회 중..."):
-            val_raw = fetch_valuation_history(stock_code)
+            val_raw = fetch_valuation_history(stock_code, _ver=_CACHE_VER)
         if val_raw and val_raw.get("__error__"):
             st.caption(f"오류: {val_raw['__error__']}")
             val_df = None
