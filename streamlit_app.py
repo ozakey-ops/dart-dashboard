@@ -284,7 +284,8 @@ def fetch_company_overview(corp_code, stock_code):
             est = d.get("est_dt", "")
             result = {
                 "ceo_nm":    d.get("ceo_nm", ""),
-                "corp_cls":  cls_map.get(d.get("corp_cls", ""), ""),
+                "corp_cls":      cls_map.get(d.get("corp_cls", ""), ""),
+                   "corp_cls_raw":  d.get("corp_cls", "Y"),
                 "est_dt":    f"{est[:4]}.{est[4:6]}" if len(est) >= 6 else "",
                 "acc_mt":    f"{d.get('acc_mt', '')}월" if d.get("acc_mt") else "",
                 "phn_no":    d.get("phn_no", ""),
@@ -481,40 +482,43 @@ def fetch_news(company_name, count=5):
         return []
 
 
-# ─── 주가 차트 ───
+# ─── 주가 차트 (yfinance / Yahoo Finance) ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_stock_chart(stock_code, timeframe="day"):
-    """네이버 금융 fchart API (KRX 데이터) 로 주가 OHLCV 조회."""
-    cnt_map  = {"day": 120, "month": 60, "year": 240}
-    tf_param = "month" if timeframe == "year" else timeframe
-    cnt      = cnt_map.get(timeframe, 120)
+def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day"):
+    """Yahoo Finance(yfinance)로 주가 OHLCV 조회.
+    corp_cls: "Y"=KOSPI(.KS) / "K"=KOSDAQ(.KQ)
+    timeframe: "day"(일봉) / "month"(월봉) / "year"(연봉)
+    """
     try:
-        url = (f"https://fchart.stock.naver.com/sise.nhn"
-               f"?symbol={stock_code}&timeframe={tf_param}&count={cnt}&requestType=0")
-        r = requests.get(url,
-                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                         timeout=10)
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
+        import yfinance as yf
+        suffix  = ".KQ" if corp_cls == "K" else ".KS"
+        ticker  = f"{stock_code}{suffix}"
+        # 기간 & 간격 설정
+        cfg = {
+            "day":   dict(period="6mo",  interval="1d"),
+            "month": dict(period="10y",  interval="1mo"),
+            "year":  dict(period="max",  interval="3mo"),   # 분기 집계 후 연도별 처리
+        }
+        kwargs = cfg.get(timeframe, cfg["day"])
+        df = yf.Ticker(ticker).history(**kwargs, auto_adjust=True)
+        if df.empty:
+            return []
+
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
         data = []
-        for item in root.findall(".//item"):
-            parts = (item.get("data", "")).split("|")
-            if len(parts) >= 6:
-                try:
-                    ds = parts[0]
-                    data.append({
-                        "date":   f"{ds[:4]}-{ds[4:6]}-{ds[6:]}",
-                        "year":   ds[:4],
-                        "open":   float(parts[1] or 0),
-                        "high":   float(parts[2] or 0),
-                        "low":    float(parts[3] or 0),
-                        "close":  float(parts[4] or 0),
-                        "volume": float(parts[5] or 0),
-                    })
-                except (ValueError, IndexError):
-                    pass
-        # 연봉: 월봉 데이터를 연도별 집계
+        for dt, row in df.iterrows():
+            data.append({
+                "date":   str(dt)[:10],
+                "year":   str(dt)[:4],
+                "open":   round(float(row["Open"]),   0),
+                "high":   round(float(row["High"]),   0),
+                "low":    round(float(row["Low"]),    0),
+                "close":  round(float(row["Close"]),  0),
+                "volume": float(row["Volume"]),
+            })
+
+        # 연봉: 분기 데이터를 연도별로 집계
         if timeframe == "year" and data:
             yearly = {}
             for d in data:
@@ -528,12 +532,13 @@ def fetch_stock_chart(stock_code, timeframe="day"):
                     yearly[yr]["close"]   = d["close"]
                     yearly[yr]["volume"] += d["volume"]
             data = sorted(yearly.values(), key=lambda x: x["date"])
+
         return data
     except Exception:
         return []
 
 
-def render_stock_chart(stock_code, corp_name):
+def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     """캔들스틱 + 거래량 차트 (일/월/연봉 선택)."""
     if not stock_code:
         return
@@ -548,7 +553,7 @@ def render_stock_chart(stock_code, corp_name):
         "연봉": f"{corp_name}  연봉 (최근 20년)",
     }
     with st.spinner("주가 데이터 조회 중..."):
-        chart_data = fetch_stock_chart(stock_code, tf_map[sel])
+        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel])
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
@@ -822,7 +827,7 @@ def main():
             st.caption("Business Summary를 불러올 수 없습니다. (FnGuide / Naver Finance 차단 가능)")
 
     # 주가 차트
-    render_stock_chart(corp.get("stock_code", ""), corp["corp_name"])
+    render_stock_chart(corp.get("stock_code", ""), corp["corp_name"], ov.get("corp_cls_raw", "Y"))
 
     cache_key = f"{corp['corp_code']}_data"
     need_fetch = (
