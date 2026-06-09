@@ -247,13 +247,20 @@ def load_corp_list():
     return corps
 
 
-def search_corps(name, all_corps):
-    exact   = [c for c in all_corps if c["corp_name"] == name]
-    partial = [c for c in all_corps if name in c["corp_name"]]
-    matches = exact if exact else partial
+def search_corps(query, all_corps):
+    q = query.strip()
+    ql = q.lower()
+    # 종목코드로 검색 (6자리 숫자 또는 A+숫자)
+    if q.isdigit() or (len(q) >= 2 and q[0].upper() == "A" and q[1:].isdigit()):
+        stock_q = q.lstrip("Aa")
+        matches = [c for c in all_corps if c["stock_code"] == stock_q or c["stock_code"] == q]
+    else:
+        exact   = [c for c in all_corps if c["corp_name"].lower() == ql]
+        partial = [c for c in all_corps if ql in c["corp_name"].lower()]
+        matches = exact if exact else partial
     if not matches:
         return []
-    matches.sort(key=lambda c: (c["corp_name"] != name, not bool(c["stock_code"]), c["corp_name"]))
+    matches.sort(key=lambda c: (c["corp_name"].lower() != ql, not bool(c["stock_code"]), c["corp_name"]))
     return matches[:20]
 
 
@@ -1397,7 +1404,7 @@ def main():
     # 검색 영역
     col1, col2 = st.columns([4, 1])
     with col1:
-        query = st.text_input("", placeholder="회사명 입력 (예: 삼성전자)",
+        query = st.text_input("", placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, samsung, 005930)",
                               label_visibility="collapsed", key="query")
     with col2:
         search_btn = st.button("🔍 검색")
@@ -1412,7 +1419,7 @@ def main():
         st.markdown("""
         <div style="text-align:center;padding:3rem;color:#768390;">
           <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
-          <div>회사명을 입력하고 검색하세요</div>
+          <div>회사명 또는 종목코드를 입력하고 검색하세요</div>
           <div style="font-size:.8rem;margin-top:.5rem;">K-IFRS 기준 최대 15년 재무제표를 불러옵니다</div>
         </div>
         """, unsafe_allow_html=True)
