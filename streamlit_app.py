@@ -868,199 +868,198 @@ def main():
             unsafe_allow_html=True
         )
 
-    # 주가 차트
-    render_stock_chart(corp.get("stock_code", ""), corp["corp_name"], ov.get("corp_cls_raw", "Y"))
+    # ══ 메인 3탭 ══
+    tab_stock, tab_fs, tab_news = st.tabs(["📈 주식", "📊 재무제표", "📢 공시 · 뉴스"])
 
-    cache_key = f"{corp['corp_code']}_data"
-    need_fetch = (
-        cache_key not in st.session_state
-        or st.session_state.get(cache_key + "_corp") != corp["corp_code"]
-        or st.session_state.get(cache_key + "_ver")  != _CACHE_VER
-        or st.session_state.get(cache_key + "_years") != (YEARS[0], YEARS[-1])
-    )
-    if need_fetch:
-        with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
-            data = fetch_all_years(corp["corp_code"], "CFS")
-            if not data:
-                data = fetch_all_years(corp["corp_code"], "OFS")
-                fs_div = "OFS"
-            else:
-                fs_div = "CFS"
-        st.session_state[cache_key]           = data
-        st.session_state[cache_key + "_fs"]   = fs_div
-        st.session_state[cache_key + "_corp"] = corp["corp_code"]
-        st.session_state[cache_key + "_ver"]  = _CACHE_VER
-        st.session_state[cache_key + "_years"] = (YEARS[0], YEARS[-1])
-    else:
-        data   = st.session_state[cache_key]
-        fs_div = st.session_state.get(cache_key + "_fs", "CFS")
+    # ────────────────────────────────────────
+    # 탭 1 : 주식
+    # ────────────────────────────────────────
+    with tab_stock:
+        render_stock_chart(corp.get("stock_code", ""), corp["corp_name"], ov.get("corp_cls_raw", "Y"))
 
-    if not data:
-        st.error("재무데이터를 불러올 수 없습니다.")
-        return
+    # ────────────────────────────────────────
+    # 탭 2 : 재무제표
+    # ────────────────────────────────────────
+    with tab_fs:
+        cache_key = f"{corp['corp_code']}_data"
+        need_fetch = (
+            cache_key not in st.session_state
+            or st.session_state.get(cache_key + "_corp") != corp["corp_code"]
+            or st.session_state.get(cache_key + "_ver")  != _CACHE_VER
+            or st.session_state.get(cache_key + "_years") != (YEARS[0], YEARS[-1])
+        )
+        if need_fetch:
+            with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
+                data = fetch_all_years(corp["corp_code"], "CFS")
+                if not data:
+                    data = fetch_all_years(corp["corp_code"], "OFS")
+                    fs_div = "OFS"
+                else:
+                    fs_div = "CFS"
+            st.session_state[cache_key]            = data
+            st.session_state[cache_key + "_fs"]    = fs_div
+            st.session_state[cache_key + "_corp"]  = corp["corp_code"]
+            st.session_state[cache_key + "_ver"]   = _CACHE_VER
+            st.session_state[cache_key + "_years"] = (YEARS[0], YEARS[-1])
+        else:
+            data   = st.session_state[cache_key]
+            fs_div = st.session_state.get(cache_key + "_fs", "CFS")
 
-    years = sorted(data.keys())
-    fs_label = "연결재무제표" if fs_div == "CFS" else "별도재무제표"
-    st.caption(f"{fs_label} 기준 · {years[0]}~{years[-1]} · 단위: 억원")
+        if not data:
+            st.error("재무데이터를 불러올 수 없습니다.")
+        else:
+            years = sorted(data.keys())
+            fs_label = "연결재무제표" if fs_div == "CFS" else "별도재무제표"
+            st.caption(f"{fs_label} 기준 · {years[0]}~{years[-1]} · 단위: 억원")
 
-    # ── KPI 카드 ──
-    ly = years[-1]
-    py = years[-2] if len(years) >= 2 else None
-    ld = data[ly]
-    pd = data[py] if py else {}
+            # KPI 카드
+            ly = years[-1]
+            py = years[-2] if len(years) >= 2 else None
+            ld = data[ly]
+            pd_data = data[py] if py else {}
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        kpi_card("매출액 (최근)", ld["is"].get("revenue"),   pd.get("is", {}).get("revenue"))
-        kpi_card("자산총계 (최근)", ld["bs"].get("assets"),  pd.get("bs", {}).get("assets"))
-    with c2:
-        kpi_card("영업이익 (최근)", ld["is"].get("opIncome"),  pd.get("is", {}).get("opIncome"))
-        kpi_card("부채비율", pct(ld["bs"].get("liabilities"), ld["bs"].get("equity")),
-                 pct(pd.get("bs", {}).get("liabilities"), pd.get("bs", {}).get("equity")),
-                 is_pct=True, invert=True)
-    with c3:
-        kpi_card("순이익 (최근)", ld["is"].get("netIncome"), pd.get("is", {}).get("netIncome"))
-        kpi_card("영업이익률", pct(ld["is"].get("opIncome"), ld["is"].get("revenue")),
-                 pct(pd.get("is", {}).get("opIncome"), pd.get("is", {}).get("revenue")),
-                 is_pct=True)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                kpi_card("매출액 (최근)",   ld["is"].get("revenue"),  pd_data.get("is", {}).get("revenue"))
+                kpi_card("자산총계 (최근)", ld["bs"].get("assets"),   pd_data.get("bs", {}).get("assets"))
+            with c2:
+                kpi_card("영업이익 (최근)", ld["is"].get("opIncome"), pd_data.get("is", {}).get("opIncome"))
+                kpi_card("부채비율",
+                         pct(ld["bs"].get("liabilities"), ld["bs"].get("equity")),
+                         pct(pd_data.get("bs", {}).get("liabilities"), pd_data.get("bs", {}).get("equity")),
+                         is_pct=True, invert=True)
+            with c3:
+                kpi_card("순이익 (최근)",  ld["is"].get("netIncome"), pd_data.get("is", {}).get("netIncome"))
+                kpi_card("영업이익률",
+                         pct(ld["is"].get("opIncome"), ld["is"].get("revenue")),
+                         pct(pd_data.get("is", {}).get("opIncome"), pd_data.get("is", {}).get("revenue")),
+                         is_pct=True)
 
-    st.divider()
+            st.divider()
 
-    # ── 탭 ──
-    tab_bs, tab_is, tab_cf = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표"])
+            # 재무제표 서브탭
+            sub_bs, sub_is, sub_cf = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표"])
 
-    # 재무상태표
-    with tab_bs:
-        c1, c2 = st.columns(2)
-        with c1:
-            fig = make_bar(years,
-                           {"자산총계": [data[y]["bs"].get("assets")      for y in years],
-                            "부채총계": [data[y]["bs"].get("liabilities")  for y in years],
-                            "자본총계": [data[y]["bs"].get("equity")       for y in years]},
-                           "자산 · 부채 · 자본 (억원)")
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            fig = make_line(years,
-                            {"부채비율(%)":     [pct(data[y]["bs"].get("liabilities"), data[y]["bs"].get("equity")) for y in years],
-                             "자기자본비율(%)": [pct(data[y]["bs"].get("equity"),      data[y]["bs"].get("assets"))  for y in years]},
-                            "부채비율 & 자기자본비율", is_pct=True)
-            st.plotly_chart(fig, use_container_width=True)
+            with sub_bs:
+                c1, c2 = st.columns(2)
+                with c1:
+                    fig = make_bar(years,
+                                   {"자산총계": [data[y]["bs"].get("assets")     for y in years],
+                                    "부채총계": [data[y]["bs"].get("liabilities") for y in years],
+                                    "자본총계": [data[y]["bs"].get("equity")      for y in years]},
+                                   "자산 · 부채 · 자본 (억원)")
+                    st.plotly_chart(fig, use_container_width=True)
+                with c2:
+                    fig = make_line(years,
+                                    {"부채비율(%)":     [pct(data[y]["bs"].get("liabilities"), data[y]["bs"].get("equity")) for y in years],
+                                     "자기자본비율(%)": [pct(data[y]["bs"].get("equity"),      data[y]["bs"].get("assets"))  for y in years]},
+                                    "부채비율 & 자기자본비율", is_pct=True)
+                    st.plotly_chart(fig, use_container_width=True)
+                fig_re = make_line(years,
+                                   {"이익잉여금": [data[y]["bs"].get("retainedEarnings") for y in years]},
+                                   "이익잉여금 추이 (억원)")
+                st.plotly_chart(fig_re, use_container_width=True)
+                rows = []
+                for y in reversed(years):
+                    b = data[y]["bs"]
+                    dr = pct(b.get("liabilities"), b.get("equity"))
+                    er = pct(b.get("equity"), b.get("assets"))
+                    rows.append({"연도": y, "자산총계": fmt(b.get("assets")),
+                                 "부채총계": fmt(b.get("liabilities")), "자본총계": fmt(b.get("equity")),
+                                 "이익잉여금": fmt(b.get("retainedEarnings")),
+                                 "부채비율": f"{dr:.1f}%" if dr else "-",
+                                 "자기자본비율": f"{er:.1f}%" if er else "-"})
+                st.dataframe(rows, hide_index=True, use_container_width=True)
 
-        re_data = {"이익잉여금": [data[y]["bs"].get("retainedEarnings") for y in years]}
-        fig_re = make_line(years, re_data, "이익잉여금 추이 (억원)")
-        st.plotly_chart(fig_re, use_container_width=True)
+            with sub_is:
+                c1, c2 = st.columns(2)
+                with c1:
+                    fig = make_bar(years,
+                                   {"매출액":   [data[y]["is"].get("revenue")   for y in years],
+                                    "영업이익": [data[y]["is"].get("opIncome")  for y in years],
+                                    "순이익":   [data[y]["is"].get("netIncome") for y in years]},
+                                   "매출 · 영업이익 · 순이익 (억원)")
+                    st.plotly_chart(fig, use_container_width=True)
+                with c2:
+                    fig = make_line(years,
+                                    {"영업이익률(%)": [pct(data[y]["is"].get("opIncome"),  data[y]["is"].get("revenue")) for y in years],
+                                     "순이익률(%)":   [pct(data[y]["is"].get("netIncome"), data[y]["is"].get("revenue")) for y in years]},
+                                    "이익률 추이", is_pct=True)
+                    st.plotly_chart(fig, use_container_width=True)
+                rows = []
+                for y in reversed(years):
+                    s = data[y]["is"]
+                    opm = pct(s.get("opIncome"),  s.get("revenue"))
+                    npm = pct(s.get("netIncome"), s.get("revenue"))
+                    rows.append({"연도": y, "매출액": fmt(s.get("revenue")),
+                                 "영업이익": fmt(s.get("opIncome")), "순이익": fmt(s.get("netIncome")),
+                                 "영업이익률": f"{opm:.1f}%" if opm else "-",
+                                 "순이익률":   f"{npm:.1f}%" if npm else "-"})
+                st.dataframe(rows, hide_index=True, use_container_width=True)
 
-        rows = []
-        for y in reversed(years):
-            b = data[y]["bs"]
-            dr = pct(b.get("liabilities"), b.get("equity"))
-            er = pct(b.get("equity"), b.get("assets"))
-            rows.append({"연도": y, "자산총계": fmt(b.get("assets")),
-                         "부채총계": fmt(b.get("liabilities")), "자본총계": fmt(b.get("equity")),
-                         "이익잉여금": fmt(b.get("retainedEarnings")),
-                         "부채비율": f"{dr:.1f}%" if dr else "-",
-                         "자기자본비율": f"{er:.1f}%" if er else "-"})
-        st.dataframe(rows, hide_index=True, use_container_width=True)
+            with sub_cf:
+                c1, c2 = st.columns(2)
+                with c1:
+                    fig = make_bar(years,
+                                   {"영업CF": [data[y]["cf"].get("opCF")  for y in years],
+                                    "투자CF": [data[y]["cf"].get("invCF") for y in years],
+                                    "재무CF": [data[y]["cf"].get("finCF") for y in years]},
+                                   "현금흐름 (억원)")
+                    st.plotly_chart(fig, use_container_width=True)
+                with c2:
+                    fig = make_line(years,
+                                    {"기말현금": [data[y]["cf"].get("endCash") for y in years]},
+                                    "기말현금 추이 (억원)")
+                    st.plotly_chart(fig, use_container_width=True)
+                rows = []
+                for y in reversed(years):
+                    c = data[y]["cf"]
+                    rows.append({"연도": y, "영업CF": fmt(c.get("opCF")),
+                                 "투자CF": fmt(c.get("invCF")), "재무CF": fmt(c.get("finCF")),
+                                 "기말현금": fmt(c.get("endCash"))})
+                st.dataframe(rows, hide_index=True, use_container_width=True)
 
-    # 손익계산서
-    with tab_is:
-        c1, c2 = st.columns(2)
-        with c1:
-            fig = make_bar(years,
-                           {"매출액":   [data[y]["is"].get("revenue")   for y in years],
-                            "영업이익": [data[y]["is"].get("opIncome")  for y in years],
-                            "순이익":   [data[y]["is"].get("netIncome") for y in years]},
-                           "매출 · 영업이익 · 순이익 (억원)")
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            fig = make_line(years,
-                            {"영업이익률(%)": [pct(data[y]["is"].get("opIncome"),  data[y]["is"].get("revenue")) for y in years],
-                             "순이익률(%)":   [pct(data[y]["is"].get("netIncome"), data[y]["is"].get("revenue")) for y in years]},
-                            "이익률 추이", is_pct=True)
-            st.plotly_chart(fig, use_container_width=True)
+    # ────────────────────────────────────────
+    # 탭 3 : 공시 · 뉴스
+    # ────────────────────────────────────────
+    with tab_news:
+        st.subheader("📢 최근 공시")
+        with st.spinner("공시 조회 중..."):
+            discs, disc_label = fetch_disclosures(corp["corp_code"])
+        if discs:
+            for d in discs:
+                link_html  = (f'<a href="{d["link"]}" target="_blank" style="color:#2563eb;text-decoration:none;">'
+                              f'{d["report_nm"]}</a>') if d["link"] else d["report_nm"]
+                badge_html = (f'<span style="background:#f1f5f9;color:#475569;font-size:.65rem;'
+                              f'border-radius:3px;padding:1px 5px;margin-right:5px;">{d["corp_cls"]}</span>'
+                              ) if d["corp_cls"] else ""
+                st.markdown(
+                    f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;">'
+                    f'{badge_html}<span style="font-size:.88rem;color:#1e293b;">{link_html}</span>'
+                    f'<span style="float:right;font-size:.72rem;color:#94a3b8;">'
+                    f'{d["rcept_dt"]} · {d["flr_nm"]}</span></div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption(f"공시 없음 — {disc_label}")
 
-        rows = []
-        for y in reversed(years):
-            s = data[y]["is"]
-            opm = pct(s.get("opIncome"),  s.get("revenue"))
-            npm = pct(s.get("netIncome"), s.get("revenue"))
-            rows.append({"연도": y, "매출액": fmt(s.get("revenue")),
-                         "영업이익": fmt(s.get("opIncome")),
-                         "순이익":   fmt(s.get("netIncome")),
-                         "영업이익률": f"{opm:.1f}%" if opm else "-",
-                         "순이익률":   f"{npm:.1f}%" if npm else "-"})
-        st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.divider()
 
-    # 현금흐름표
-    with tab_cf:
-        c1, c2 = st.columns(2)
-        with c1:
-            fig = make_bar(years,
-                           {"영업CF":  [data[y]["cf"].get("opCF")   for y in years],
-                            "투자CF":  [data[y]["cf"].get("invCF")  for y in years],
-                            "재무CF":  [data[y]["cf"].get("finCF")  for y in years]},
-                           "현금흐름 (억원)")
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            fig = make_line(years,
-                            {"기말현금": [data[y]["cf"].get("endCash") for y in years]},
-                            "기말현금 추이 (억원)")
-            st.plotly_chart(fig, use_container_width=True)
-
-        rows = []
-        for y in reversed(years):
-            c = data[y]["cf"]
-            rows.append({"연도": y,
-                         "영업CF":  fmt(c.get("opCF")),
-                         "투자CF":  fmt(c.get("invCF")),
-                         "재무CF":  fmt(c.get("finCF")),
-                         "기말현금": fmt(c.get("endCash"))})
-        st.dataframe(rows, hide_index=True, use_container_width=True)
-
-    st.divider()
-
-    # ── 공시 ──
-    st.subheader("📢 최근 공시")
-    with st.spinner("공시 조회 중..."):
-        discs, disc_label = fetch_disclosures(corp["corp_code"])
-    if discs:
-        for d in discs:
-            link_html = (f'<a href="{d["link"]}" target="_blank" '
-                         f'style="color:#2563eb;text-decoration:none;">' 
-                         f'{d["report_nm"]}</a>') if d["link"] else d["report_nm"]
-            badge_html = (f'<span style="background:#f1f5f9;color:#475569;'
-                          f'font-size:.65rem;border-radius:3px;padding:1px 5px;'
-                          f'margin-right:5px;">{d["corp_cls"]}</span>') if d["corp_cls"] else ""
-            st.markdown(
-                f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;">' 
-                f'{badge_html}' 
-                f'<span style="font-size:.88rem;color:#1e293b;">{link_html}</span>' 
-                f'<span style="float:right;font-size:.72rem;color:#94a3b8;">' 
-                f'{d["rcept_dt"]} · {d["flr_nm"]}</span></div>',
-                unsafe_allow_html=True
-            )
-    else:
-        st.caption(f"공시 없음 — {disc_label}")
-
-    st.divider()
-
-    # ── 뉴스 ──
-    st.subheader("📰 최근 뉴스")
-    with st.spinner("뉴스 수집 중..."):
-        news = fetch_news(corp["corp_name"])
-    if news:
-        for n in news:
-            st.markdown(
-                f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;">' 
-                f'<a href="{n["link"]}" target="_blank" ' 
-                f'style="font-size:.88rem;color:#1e293b;text-decoration:none;">' 
-                f'{n["title"]}</a>' 
-                f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">' 
-                f'{n["source"]}  ·  {n["date"]}</div></div>',
-                unsafe_allow_html=True
-            )
-    else:
-        st.caption("뉴스를 불러올 수 없습니다.")
+        st.subheader("📰 최근 뉴스")
+        with st.spinner("뉴스 수집 중..."):
+            news = fetch_news(corp["corp_name"])
+        if news:
+            for n in news:
+                st.markdown(
+                    f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;">'
+                    f'<a href="{n["link"]}" target="_blank" style="font-size:.88rem;color:#1e293b;text-decoration:none;">'
+                    f'{n["title"]}</a>'
+                    f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">'
+                    f'{n["source"]}  ·  {n["date"]}</div></div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("뉴스를 불러올 수 없습니다.")
 
 
 # ══════════════════════════════════════════
