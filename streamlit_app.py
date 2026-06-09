@@ -22,7 +22,7 @@ DART_KEY = "901de77da059b85e095a99ab9f2baf3264f7281f"
 # ══════════════════════════════════════════
 
 BASE       = "https://opendart.fss.or.kr/api"
-YEARS      = list(range(2006, 2026))
+YEARS      = list(range(2011, 2026))   # K-IFRS 의무화(2011)~현재
 
 ACC = {
     "assets":      ["자산총계"],
@@ -43,7 +43,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 5
+_CACHE_VER = 6
 
 COLORS = {
     "blue":   "#2563eb",
@@ -473,7 +473,7 @@ def main():
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
         <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">DART 재무 대시보드</div>
-        <div style="font-size:.72rem;color:#64748b;margin-top:2px;">전자공시 OpenAPI · 최대 20년 재무제표 분석</div>
+        <div style="font-size:.72rem;color:#64748b;margin-top:2px;">전자공시 OpenAPI · K-IFRS 기준 최대 15년 분석</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -497,7 +497,7 @@ def main():
         <div style="text-align:center;padding:3rem;color:#768390;">
           <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
           <div>회사명을 입력하고 검색하세요</div>
-          <div style="font-size:.8rem;margin-top:.5rem;">최대 20년치 재무제표를 자동으로 불러옵니다</div>
+          <div style="font-size:.8rem;margin-top:.5rem;">K-IFRS 기준 최대 15년 재무제표를 불러옵니다</div>
         </div>
         """, unsafe_allow_html=True)
         return
@@ -554,7 +554,7 @@ def main():
         or st.session_state.get(cache_key + "_years") != (YEARS[0], YEARS[-1])
     )
     if need_fetch:
-        with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (최대 20년)..."):
+        with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
             data = fetch_all_years(corp["corp_code"], "CFS")
             if not data:
                 data = fetch_all_years(corp["corp_code"], "OFS")
