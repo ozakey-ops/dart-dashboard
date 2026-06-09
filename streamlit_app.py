@@ -461,10 +461,11 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     sel = st.radio("기간", period_labels, horizontal=True,
                    key=f"sp_{stock_code}", label_visibility="collapsed")
     tf_map = {"일봉": "day", "월봉": "month", "연봉": "year"}
+    hint = "  ·  두 번 탭 → 자동 스케일"
     title_map = {
-        "일봉": f"{corp_name}  일봉 (최근 6개월)",
-        "월봉": f"{corp_name}  월봉 (최근 5년)",
-        "연봉": f"{corp_name}  연봉 (최근 20년)",
+        "일봉": f"{corp_name}  일봉 (최근 6개월){hint}",
+        "월봉": f"{corp_name}  월봉 (최근 5년){hint}",
+        "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
     }
     with st.spinner("주가 데이터 조회 중..."):
         chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel])
