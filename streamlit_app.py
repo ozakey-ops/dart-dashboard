@@ -28,7 +28,7 @@ except Exception:
 #  공공데이터포털 KRX API Key
 #  발급: https://www.data.go.kr → 한국거래소_주식시세정보 검색 → 활용신청
 # ══════════════════════════════════════════
-KRX_API_KEY = "9376B2F5D8C845FB8A426A7F5359EB9B48D8A415"   
+KRX_API_KEY = "YOUR_KRX_API_KEY"   # ← 발급받은 serviceKey 입력
 _GODATA_URL  = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
 # ══════════════════════════════════════════
 
@@ -55,7 +55,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 15
+_CACHE_VER = 16
 
 COLORS = {
     "blue":   "#2563eb",
@@ -900,14 +900,20 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
 # ─── 공공데이터포털 KRX API ───
 
 def _godata_get(endpoint, params):
-    """공공데이터포털 KRX API 공통 호출. items 리스트 반환."""
+    """공공데이터포털 KRX API 공통 호출. items 리스트 반환.
+    ※ data.go.kr 에서 복사한 키가 인코딩 키(%2B 등 포함)라면
+      디코딩 키(+, / 포함된 원본)로 교체해야 합니다.
+    """
+    import urllib.parse
     url = f"{_GODATA_URL}/{endpoint}"
-    p = {"serviceKey": KRX_API_KEY, "resultType": "json",
-         "numOfRows": "100", "pageNo": "1", **params}
-    r = requests.get(url, params=p, timeout=15)
+    # serviceKey는 params 에 넣으면 이중 인코딩 → URL에 직접 붙임
+    query = urllib.parse.urlencode(
+        {"resultType": "json", "numOfRows": "100", "pageNo": "1", **params}
+    )
+    full_url = f"{url}?serviceKey={KRX_API_KEY}&{query}"
+    r = requests.get(full_url, timeout=15)
     r.raise_for_status()
     j = r.json()
-    # 응답 구조: response.body.items.item (단건 시 dict, 다건 시 list)
     try:
         item = j["response"]["body"]["items"]["item"]
         return item if isinstance(item, list) else [item]
@@ -953,92 +959,47 @@ def fetch_market_cap_history(stock_code, corp_cls="Y", _ver=1):
         return {"__error__": str(e)}
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_investor_trading(stock_code, _ver=1):
-    """공공데이터포털 KRX API: 투자자별 거래실적 (최근 60일).
-    getStockInvestorTradingInfo 사용.
-    """
-    try:
-        import pandas as pd
-        from datetime import timedelta
-
-        end_dt  = datetime.now()
-        strt_dt = end_dt - timedelta(days=60)
-
-        items = _godata_get("getStockInvestorTradingInfo", {
-            "strtBasDt":  strt_dt.strftime("%Y%m%d"),
-            "endBasDt":   end_dt.strftime("%Y%m%d"),
-            "likeSrtnCd": stock_code,
-            "numOfRows":  "100",
-        })
-        if not items:
-            return {"__error__": "투자자별 거래 데이터 없음"}
-
-        records = []
-        for row in items:
-            dt_raw = row.get("basDt", "")
-            try:
-                dt = pd.to_datetime(dt_raw)
-            except Exception:
-                continue
-            def _i(k): return int(str(row.get(k, "0")).replace(",", "") or "0")
-            records.append({
-                "date":  dt,
-                "기관합계": _i("instNetBuyTrdVal"),
-                "개인":   _i("reitNetBuyTrdVal"),
-                "외국인":  _i("frgnNetBuyTrdVal"),
-            })
-
-        if not records:
-            return {"__error__": "수급 파싱 실패"}
-
-        df_daily = pd.DataFrame(records).set_index("date").sort_index()
-        df_total = df_daily.sum().to_frame(name="순매수")
-        return {"daily": df_daily, "total": df_total}
-    except Exception as e:
-        return {"__error__": str(e)}
+    """투자자별 수급 — 공공데이터포털 미지원 엔드포인트."""
+    return {"__error__": "공공데이터포털 미지원 (투자자별 거래실적 API 없음)"}
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_valuation_history(stock_code, _ver=1):
-    """공공데이터포털 KRX API: 월별 PER/PBR/DIV 추이 (최근 5년).
-    getStockPriceInfo — per, pbr, dvdYld 필드 사용.
-    월말 영업일 기준으로 월별 집계.
+    """공공데이터포털 KRX API: 연도별 PER/PBR/DIV (최근 10년).
+    getStockPriceInfo — per, pbr, dvdYld 필드.
+    연말 거래일 기준 연도별 집계 (API 호출 최소화).
     """
     try:
         import pandas as pd
         from datetime import date, timedelta
-        import calendar
 
         cur_year = datetime.now().year
         records  = []
 
-        # 최근 5년 × 12개월 = 60개 월말 날짜 조회
-        for year in range(cur_year - 4, cur_year + 1):
-            for month in range(1, 13):
-                if year == cur_year and month > datetime.now().month:
-                    break
-                last_day = calendar.monthrange(year, month)[1]
-                # 월말 영업일 후보 탐색
-                for delta in range(5):
-                    d = date(year, month, last_day) - timedelta(days=delta)
-                    items = _godata_get("getStockPriceInfo", {
-                        "basDt":     d.strftime("%Y%m%d"),
-                        "likeSrtnCd": stock_code,
+        for year in range(cur_year - 9, cur_year + 1):
+            for delta in range(6):
+                if year < cur_year:
+                    d = date(year, 12, 31) - timedelta(days=delta)
+                else:
+                    d = datetime.now().date() - timedelta(days=delta + 1)
+                items = _godata_get("getStockPriceInfo", {
+                    "basDt":      d.strftime("%Y%m%d"),
+                    "likeSrtnCd": stock_code,
+                })
+                if items:
+                    row = items[0]
+                    def _f(k):
+                        v = row.get(k, "")
+                        try: return float(str(v).replace(",", ""))
+                        except: return None
+                    records.append({
+                        "date": pd.Timestamp(year=year, month=d.month, day=d.day),
+                        "PER": _f("per"),
+                        "PBR": _f("pbr"),
+                        "DIV": _f("dvdYld"),
                     })
-                    if items:
-                        row = items[0]
-                        def _f(k):
-                            v = row.get(k, "")
-                            try: return float(str(v).replace(",", ""))
-                            except: return None
-                        records.append({
-                            "date": pd.Timestamp(year=year, month=month, day=d.day),
-                            "PER": _f("per"),
-                            "PBR": _f("pbr"),
-                            "DIV": _f("dvdYld"),
-                        })
-                        break
+                    break
 
         if not records:
             return {"__error__": f"밸류에이션 데이터 없음 (코드 {stock_code})"}
