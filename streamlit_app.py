@@ -900,17 +900,17 @@ def fetch_market_cap_history(stock_code, _ver=1):
         start = str(datetime.now().year - 12) + "0101"
         df = krx.get_market_cap(start, end, stock_code, freq="y")
         if df is None or df.empty:
-            return {}
+            return {"__error__": "데이터 없음 (비상장 또는 조회 불가 종목)"}
         result = {}
         for dt, row in df.iterrows():
             year = str(dt)[:4]
             result[year] = {
-                "mktcap": round(int(row.get("시가총액", 0)) / 1e8),   # 억원
+                "mktcap": round(int(row.get("시가총액", 0)) / 1e8),
                 "shares": int(row.get("상장주식수", 0)),
             }
         return result
-    except Exception:
-        return {}
+    except Exception as e:
+        return {"__error__": str(e)}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -924,8 +924,8 @@ def fetch_investor_trading(stock_code, _ver=1):
         df_daily = krx.get_market_trading_value_by_date(start, end, stock_code)
         df_total = krx.get_market_trading_value_by_investor(start, end, stock_code)
         return {"daily": df_daily, "total": df_total}
-    except Exception:
-        return {}
+    except Exception as e:
+        return {"__error__": str(e)}
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -936,9 +936,11 @@ def fetch_valuation_history(stock_code, _ver=1):
         end   = datetime.now().strftime("%Y%m%d")
         start = str(datetime.now().year - 5) + "0101"
         df = krx.get_market_fundamental(start, end, stock_code, freq="m")
-        return df if (df is not None and not df.empty) else None
-    except Exception:
-        return None
+        if df is None or df.empty:
+            return {"__error__": "데이터 없음"}
+        return {"df": df}
+    except Exception as e:
+        return {"__error__": str(e)}
 
 
 def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
@@ -1309,8 +1311,10 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         _section_header("연도별 시가총액 추이")
         with st.spinner("시가총액 데이터 조회 중..."):
             cap_data = fetch_market_cap_history(stock_code)
-        if cap_data:
-            cap_years = sorted(cap_data.keys())
+        if cap_data.get("__error__"):
+            st.caption(f"오류: {cap_data['__error__']}")
+        elif cap_data:
+            cap_years = sorted(k for k in cap_data if not k.startswith("_"))
             cap_vals  = [cap_data[y]["mktcap"] for y in cap_years]
             fig_cap = go.Figure()
             fig_cap.add_trace(go.Bar(
@@ -1328,8 +1332,6 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             )
             fig_cap.update_yaxes(tickformat=",")
             st.plotly_chart(fig_cap, use_container_width=True)
-        else:
-            st.caption("시가총액 데이터를 불러올 수 없습니다. (pykrx 설치 필요)")
 
         # ────────────────────────────────────
         # ⑥ 투자자별 수급
@@ -1337,7 +1339,9 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         _section_header("투자자별 수급 (최근 1년)")
         with st.spinner("수급 데이터 조회 중..."):
             inv_data = fetch_investor_trading(stock_code)
-        if inv_data:
+        if inv_data.get("__error__"):
+            st.caption(f"오류: {inv_data['__error__']}")
+        elif inv_data:
             df_daily = inv_data.get("daily")
             df_total = inv_data.get("total")
 
@@ -1385,15 +1389,18 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                     )
                     fig_tot.update_yaxes(tickformat=",", ticksuffix="억")
                     st.plotly_chart(fig_tot, use_container_width=True)
-        else:
-            st.caption("수급 데이터를 불러올 수 없습니다. (pykrx 설치 필요)")
 
         # ────────────────────────────────────
         # ⑦ 밸류에이션 PER / PBR / DIV
         # ────────────────────────────────────
         _section_header("밸류에이션 추이 (월별 PER · PBR · DIV)")
         with st.spinner("밸류에이션 데이터 조회 중..."):
-            val_df = fetch_valuation_history(stock_code)
+            val_raw = fetch_valuation_history(stock_code)
+        if val_raw and val_raw.get("__error__"):
+            st.caption(f"오류: {val_raw['__error__']}")
+            val_df = None
+        else:
+            val_df = val_raw.get("df") if val_raw else None
         if val_df is not None and not val_df.empty:
             dates_v = val_df.index.astype(str).tolist()
 
@@ -1445,8 +1452,8 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                 )
                 fig_div.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0")
                 st.plotly_chart(fig_div, use_container_width=True)
-        else:
-            st.caption("밸류에이션 데이터를 불러올 수 없습니다. (pykrx 설치 필요)")
+        elif val_df is None:
+            st.caption("밸류에이션 데이터를 불러올 수 없습니다.")
 
 
 # ─── 차트 ───
