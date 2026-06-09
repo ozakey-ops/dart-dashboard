@@ -479,13 +479,15 @@ def fetch_news(company_name, count=15):
 # ─── 최대주주 현황 (DART majorstock) ───
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_major_shareholders(corp_code, _ver=1):
+def fetch_major_shareholders(corp_code, _ver=2):
     """DART majorstock.json — 최대주주 현황 조회.
     가장 최근 사업연도부터 폴백하며 데이터를 찾는다.
-    반환: list of dict {name, relation, shares, ratio, note} or []
+    반환: list of dict {name, relation, shares, ratio, year, rcode} or []
     """
-    reprt_codes = ["11011", "11012", "11013", "11014"]   # 사업보고서 → 반기 → 1Q → 3Q 순
-    for year in range(_LATEST_YEAR, _LATEST_YEAR - 3, -1):
+    reprt_codes = ["11011", "11012", "11013", "11014"]   # 사업보고서→반기→1Q→3Q
+    # _LATEST_YEAR 이후 현재 연도까지 포함 (당해 사업보고서 제출된 경우 대비)
+    cur_year = datetime.now().year
+    for year in range(cur_year, cur_year - 4, -1):
         for rcode in reprt_codes:
             try:
                 r = requests.get(
@@ -495,35 +497,78 @@ def fetch_major_shareholders(corp_code, _ver=1):
                     timeout=10,
                 )
                 data = r.json()
-                if data.get("status") == "000" and data.get("list"):
-                    rows = []
-                    for item in data["list"]:
-                        name    = item.get("nm", "").strip()
-                        relation= item.get("relate", "").strip()
-                        shares_s= item.get("stock_co", "").replace(",", "").strip()
-                        ratio_s = item.get("trmend_posesn_stock_co", "").replace(",", "").strip()
-                        ratio_pct_s = item.get("trmend_posesn_stock_qota_rt", "").replace(",", "").strip()
-                        try:
-                            shares = int(shares_s) if shares_s else 0
-                        except ValueError:
-                            shares = 0
-                        try:
-                            ratio_pct = float(ratio_pct_s) if ratio_pct_s else None
-                        except ValueError:
-                            ratio_pct = None
-                        if name:
-                            rows.append({
-                                "name": name,
-                                "relation": relation,
-                                "shares": shares,
-                                "ratio": ratio_pct,
-                                "year": year,
-                                "rcode": rcode,
-                            })
-                    if rows:
-                        return rows
+                if data.get("status") != "000":
+                    continue
+                items = data.get("list") or []
+                rows = []
+                for item in items:
+                    name        = item.get("nm", "").strip()
+                    relation    = item.get("relate", "").strip()
+                    # 기말 보유주식수 / 기말 지분율
+                    shares_s    = item.get("trmend_posesn_stock_co", "").replace(",", "").strip()
+                    ratio_pct_s = item.get("trmend_posesn_stock_qota_rt", "").replace(",", "").strip()
+                    stock_knd   = item.get("stock_knd", "").strip()  # 주식종류 (보통주/우선주)
+                    rm          = item.get("rm", "").strip()         # 비고
+                    try:
+                        shares = int(shares_s) if shares_s else 0
+                    except ValueError:
+                        shares = 0
+                    try:
+                        ratio_pct = float(ratio_pct_s) if ratio_pct_s else None
+                    except ValueError:
+                        ratio_pct = None
+                    if name:
+                        rows.append({
+                            "name": name,
+                            "relation": relation,
+                            "shares": shares,
+                            "ratio": ratio_pct,
+                            "stock_knd": stock_knd,
+                            "rm": rm,
+                            "year": year,
+                            "rcode": rcode,
+                        })
+                if rows:
+                    return rows
             except Exception:
                 continue
+    return []
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_shareholder_changes(corp_code, count=10, _ver=1):
+    """DART list.json — 지분공시(D) 최근 공시 목록 조회."""
+    from datetime import timedelta
+    end_de   = datetime.now().strftime("%Y%m%d")
+    start_de = (datetime.now() - timedelta(days=365 * 3)).strftime("%Y%m%d")
+    try:
+        r = requests.get(
+            f"{BASE}/list.json",
+            params={
+                "crtfc_key": DART_KEY,
+                "corp_code": corp_code,
+                "bgn_de": start_de,
+                "end_de": end_de,
+                "pblntf_ty": "D",   # 지분공시
+                "page_count": count,
+                "sort": "date",
+                "sort_mth": "desc",
+            },
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("status") == "000" and data.get("list"):
+            return [
+                {
+                    "date":  item.get("rcept_dt", "")[:10],
+                    "title": item.get("report_nm", "").strip(),
+                    "filer": item.get("flr_nm", "").strip(),
+                    "rcept_no": item.get("rcept_no", ""),
+                }
+                for item in data["list"][:count]
+            ]
+    except Exception:
+        pass
     return []
 
 
@@ -718,57 +763,100 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
     fig.update_yaxes(title_text="거래량", tickformat=".3s", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── 최대주주 현황 ──
+    # ── 최대주주 현황 + 지분변동 공시 ──
     if corp_code:
-        with st.spinner("최대주주 데이터 조회 중..."):
-            shareholders = fetch_major_shareholders(corp_code)
-        if shareholders:
-            ref_year  = shareholders[0]["year"]
-            ref_rcode = shareholders[0]["rcode"]
-            rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
-                           "11013": "1분기보고서", "11014": "3분기보고서"}
-            ref_label = f"{ref_year}년 {rcode_label.get(ref_rcode, ref_rcode)}"
-
-            # 헤더
+        def _section_header(title, sub=""):
+            sub_html = (f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;'
+                        f'margin-left:6px;">{sub}</span>') if sub else ""
             st.markdown(
                 f'<div style="font-size:.78rem;font-weight:700;color:#1e293b;'
-                f'margin:12px 0 6px;border-left:3px solid #2563eb;padding-left:8px;">'
-                f'최대주주 현황 <span style="font-size:.68rem;font-weight:400;'
-                f'color:#94a3b8;margin-left:6px;">{ref_label}</span></div>',
+                f'margin:14px 0 6px;border-left:3px solid #2563eb;padding-left:8px;">'
+                f'{title}{sub_html}</div>',
                 unsafe_allow_html=True,
             )
 
-            # 테이블 행 생성
+        # ① 최대주주 현황 테이블
+        with st.spinner("최대주주 데이터 조회 중..."):
+            shareholders = fetch_major_shareholders(corp_code)
+
+        rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
+                       "11013": "1분기보고서", "11014": "3분기보고서"}
+        if shareholders:
+            ref = shareholders[0]
+            ref_label = f"{ref['year']}년 {rcode_label.get(ref['rcode'], ref['rcode'])}"
+            _section_header("최대주주 현황", ref_label)
+
             rows_html = ""
             for i, sh in enumerate(shareholders):
                 bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
-                ratio_str = (f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-")
+                ratio_str  = f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-"
                 shares_str = f"{sh['shares']:,}" if sh["shares"] else "-"
+                knd_badge  = (f'<span style="font-size:.62rem;background:#e0f2fe;'
+                              f'color:#0369a1;border-radius:4px;padding:1px 5px;'
+                              f'margin-left:4px;">{sh["stock_knd"]}</span>'
+                              if sh.get("stock_knd") else "")
+                rm_str     = sh.get("rm", "") or ""
                 rows_html += (
                     f'<tr style="background:{bg};">'
-                    f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh["name"]}</td>'
+                    f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">'
+                    f'{sh["name"]}{knd_badge}</td>'
                     f'<td style="padding:5px 8px;font-size:.75rem;color:#64748b;text-align:center;">{sh["relation"]}</td>'
                     f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{shares_str}</td>'
                     f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;">{ratio_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;">{rm_str}</td>'
                     f'</tr>'
                 )
-
-            table_html = (
-                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;'
-                f'margin-bottom:16px;">'
+            st.markdown(
+                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:8px;">'
                 f'<table style="width:100%;border-collapse:collapse;">'
                 f'<thead><tr style="background:#f1f5f9;">'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:left;font-weight:600;">주주명</th>'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:center;font-weight:600;">관계</th>'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">보유주식수</th>'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">지분율</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">비고</th>'
                 f'</tr></thead>'
                 f'<tbody>{rows_html}</tbody>'
-                f'</table></div>'
+                f'</table></div>',
+                unsafe_allow_html=True,
             )
-            st.markdown(table_html, unsafe_allow_html=True)
         else:
+            _section_header("최대주주 현황")
             st.caption("최대주주 데이터를 찾을 수 없습니다.")
+
+        # ② 지분변동 공시 목록
+        with st.spinner("지분공시 조회 중..."):
+            sh_changes = fetch_shareholder_changes(corp_code, count=10)
+
+        _section_header("지분변동 공시")
+        if sh_changes:
+            rows_html2 = ""
+            for i, ch in enumerate(sh_changes):
+                bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
+                dart_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={ch['rcept_no']}"
+                rows_html2 += (
+                    f'<tr style="background:{bg};">'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;white-space:nowrap;">{ch["date"]}</td>'
+                    f'<td style="padding:5px 8px;font-size:.76rem;color:#1e293b;">'
+                    f'<a href="{dart_url}" target="_blank" style="color:#1e293b;text-decoration:none;">'
+                    f'{ch["title"]}</a></td>'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#64748b;white-space:nowrap;">{ch["filer"]}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:16px;">'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f1f5f9;">'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">날짜</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">공시명</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">제출인</th>'
+                f'</tr></thead>'
+                f'<tbody>{rows_html2}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("최근 지분변동 공시가 없습니다.")
 
 
 # ─── 차트 ───
