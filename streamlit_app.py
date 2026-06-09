@@ -294,59 +294,16 @@ def fetch_company_overview(corp_code, stock_code):
     except Exception:
         pass
 
-    # 2. FnGuide Business Summary — Session + EUC-KR 방식
+    # 2. Business Summary — FnGuide 시도, 실패 시 네이버 금융 백업
     result["summary"] = ""
+    result["summary_src"] = ""
     if stock_code:
-        try:
-            import re as _re2, html as _html_mod
-            UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/124.0.0.0 Safari/537.36")
-            hdrs = {
-                "User-Agent": UA,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive",
-                "Referer": "https://comp.fnguide.com/",
-            }
-            sess = requests.Session()
-            # 쿠키 먼저 수집
-            try:
-                sess.get("https://comp.fnguide.com/", headers=hdrs, timeout=6)
-            except Exception:
-                pass
+        import re as _re2, html as _html_mod
+        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/124.0.0.0 Safari/537.36")
 
-            url = (f"https://comp.fnguide.com/svo/ASPSYSTEM/ASP_Company.asp"
-                   f"?pGB=KB&gicode=A{stock_code}")
-            resp = sess.get(url, headers=hdrs, timeout=14)
-
-            # 인코딩 자동 탐지 (EUC-KR 우선)
-            raw_bytes = resp.content
-            html_text = ""
-            for enc in ["euc-kr", "cp949", "utf-8"]:
-                try:
-                    decoded = raw_bytes.decode(enc)
-                    if "동사" in decoded or "당사" in decoded or "사업" in decoded:
-                        html_text = decoded
-                        break
-                except Exception:
-                    continue
-            if not html_text:
-                html_text = resp.text
-
-            # 추출 패턴 — FnGuide 실제 구조 기반
-            # td.td_table_a1 이 Business Summary 본문 셀
-            patterns = [
-                # 1) 실제 클래스 직접 매칭 (가장 정확)
-                r'<td[^>]+class=["\']td_table_a1["\'][^>]*>([\s\S]{80,3000}?)</td>',
-                # 2) Business Summary 헤더 이후 첫 번째 긴 TD
-                r'Business\s*Summary[\s\S]{0,600}?<td[^>]*>([\s\S]{80,3000}?)</td>',
-                # 3) "동사는|당사는|회사는" 으로 시작하는 TD
-                r'<td[^>]*>\s*((?:동사|당사|회사)는[\s\S]{80,2500}?)</td>',
-                # 4) 작성일 바로 앞 TD
-                r'<td[^>]*>([\s\S]{80,3000}?)</td>\s*</tr>\s*<tr[^>]*>\s*<td[^>]*>\s*작성일',
-            ]
+        def _extract_text(html_text, patterns):
             for pat in patterns:
                 m = _re2.search(pat, html_text, _re2.IGNORECASE)
                 if m:
@@ -354,10 +311,72 @@ def fetch_company_overview(corp_code, stock_code):
                     text = _html_mod.unescape(text)
                     text = _re2.sub(r'\s+', ' ', text).strip()
                     if len(text) > 80:
-                        result["summary"] = text[:900]
+                        return text[:900]
+            return ""
+
+        # ── A. FnGuide (td.td_table_a1) ──
+        try:
+            hdrs = {
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9",
+                "Accept-Encoding": "gzip, deflate",
+                "Referer": "https://comp.fnguide.com/",
+            }
+            sess = requests.Session()
+            try:
+                sess.get("https://comp.fnguide.com/", headers=hdrs, timeout=5)
+            except Exception:
+                pass
+            url = (f"https://comp.fnguide.com/svo/ASPSYSTEM/ASP_Company.asp"
+                   f"?pGB=KB&gicode=A{stock_code}")
+            resp = sess.get(url, headers=hdrs, timeout=12)
+            raw = resp.content
+            html_text = ""
+            for enc in ["euc-kr", "cp949", "utf-8"]:
+                try:
+                    d = raw.decode(enc)
+                    if "동사" in d or "당사" in d or "사업" in d:
+                        html_text = d
                         break
+                except Exception:
+                    continue
+            if not html_text:
+                html_text = resp.text
+            fg_patterns = [
+                r'<td[^>]+class=["\']td_table_a1["\'][^>]*>([\s\S]{80,3000}?)</td>',
+                r'Business\s*Summary[\s\S]{0,600}?<td[^>]*>([\s\S]{80,3000}?)</td>',
+                r'<td[^>]*>\s*((?:동사|당사|회사)는[\s\S]{80,2500}?)</td>',
+            ]
+            text = _extract_text(html_text, fg_patterns)
+            if text:
+                result["summary"] = text
+                result["summary_src"] = "FnGuide"
         except Exception:
             pass
+
+        # ── B. 네이버 금융 백업 (FnGuide 실패 시) ──
+        if not result["summary"]:
+            try:
+                nv_url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+                r2 = requests.get(nv_url,
+                                  headers={"User-Agent": UA,
+                                           "Accept-Language": "ko-KR,ko;q=0.9"},
+                                  timeout=10)
+                r2.encoding = "euc-kr"
+                nv_html = r2.text
+                nv_patterns = [
+                    # 네이버 금융 종목 개요 / 기업개요 텍스트
+                    r'<div[^>]+class=["\'][^"\']*company_summary[^"\']*["\'][^>]*>([\s\S]{80,2000}?)</div>',
+                    r'<p[^>]+class=["\'][^"\']*intro[^"\']*["\'][^>]*>([\s\S]{80,2000}?)</p>',
+                    r'종목\s*개요[\s\S]{0,300}?<td[^>]*>([\s\S]{80,2000}?)</td>',
+                ]
+                text2 = _extract_text(nv_html, nv_patterns)
+                if text2:
+                    result["summary"] = text2
+                    result["summary_src"] = "Naver Finance"
+            except Exception:
+                pass
 
     return result
 
@@ -460,6 +479,118 @@ def fetch_news(company_name, count=5):
         return news
     except Exception:
         return []
+
+
+# ─── 주가 차트 ───
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_stock_chart(stock_code, timeframe="day"):
+    """네이버 금융 fchart API (KRX 데이터) 로 주가 OHLCV 조회."""
+    cnt_map  = {"day": 120, "month": 60, "year": 240}
+    tf_param = "month" if timeframe == "year" else timeframe
+    cnt      = cnt_map.get(timeframe, 120)
+    try:
+        url = (f"https://fchart.stock.naver.com/sise.nhn"
+               f"?symbol={stock_code}&timeframe={tf_param}&count={cnt}&requestType=0")
+        r = requests.get(url,
+                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                         timeout=10)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        data = []
+        for item in root.findall(".//item"):
+            parts = (item.get("data", "")).split("|")
+            if len(parts) >= 6:
+                try:
+                    ds = parts[0]
+                    data.append({
+                        "date":   f"{ds[:4]}-{ds[4:6]}-{ds[6:]}",
+                        "year":   ds[:4],
+                        "open":   float(parts[1] or 0),
+                        "high":   float(parts[2] or 0),
+                        "low":    float(parts[3] or 0),
+                        "close":  float(parts[4] or 0),
+                        "volume": float(parts[5] or 0),
+                    })
+                except (ValueError, IndexError):
+                    pass
+        # 연봉: 월봉 데이터를 연도별 집계
+        if timeframe == "year" and data:
+            yearly = {}
+            for d in data:
+                yr = d["year"]
+                if yr not in yearly:
+                    yearly[yr] = {k: d[k] for k in d}
+                    yearly[yr]["date"] = yr
+                else:
+                    yearly[yr]["high"]    = max(yearly[yr]["high"], d["high"])
+                    yearly[yr]["low"]     = min(yearly[yr]["low"],  d["low"])
+                    yearly[yr]["close"]   = d["close"]
+                    yearly[yr]["volume"] += d["volume"]
+            data = sorted(yearly.values(), key=lambda x: x["date"])
+        return data
+    except Exception:
+        return []
+
+
+def render_stock_chart(stock_code, corp_name):
+    """캔들스틱 + 거래량 차트 (일/월/연봉 선택)."""
+    if not stock_code:
+        return
+    # 기간 선택 라디오
+    period_labels = ["일봉", "월봉", "연봉"]
+    sel = st.radio("기간", period_labels, horizontal=True,
+                   key=f"sp_{stock_code}", label_visibility="collapsed")
+    tf_map = {"일봉": "day", "월봉": "month", "연봉": "year"}
+    title_map = {
+        "일봉": f"{corp_name}  일봉 (최근 6개월)",
+        "월봉": f"{corp_name}  월봉 (최근 5년)",
+        "연봉": f"{corp_name}  연봉 (최근 20년)",
+    }
+    with st.spinner("주가 데이터 조회 중..."):
+        chart_data = fetch_stock_chart(stock_code, tf_map[sel])
+    if not chart_data:
+        st.caption("주가 데이터를 불러올 수 없습니다.")
+        return
+    dates   = [d["date"]   for d in chart_data]
+    opens_  = [d["open"]   for d in chart_data]
+    highs   = [d["high"]   for d in chart_data]
+    lows    = [d["low"]    for d in chart_data]
+    closes  = [d["close"]  for d in chart_data]
+    volumes = [d["volume"] for d in chart_data]
+    # 상승=빨강 / 하락=파랑 (한국식)
+    vol_colors = ["#dc2626" if c >= o else "#2563eb"
+                  for c, o in zip(closes, opens_)]
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.04, row_heights=[0.72, 0.28])
+    fig.add_trace(go.Candlestick(
+        x=dates, open=opens_, high=highs, low=lows, close=closes,
+        name="주가",
+        increasing_line_color="#dc2626", increasing_fillcolor="#dc2626",
+        decreasing_line_color="#2563eb", decreasing_fillcolor="#2563eb",
+        line_width=1,
+    ), row=1, col=1)
+    fig.add_trace(go.Bar(
+        x=dates, y=volumes, name="거래량",
+        marker_color=vol_colors, opacity=0.75,
+    ), row=2, col=1)
+    fig.update_layout(
+        title=dict(text=title_map[sel], font=dict(size=13, color="#1e293b"), x=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(248,250,252,1)",
+        font=dict(color="#64748b", size=11),
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=8, r=8, t=38, b=8),
+        height=420,
+        showlegend=False,
+        hovermode="x unified",
+    )
+    for row in [1, 2]:
+        fig.update_xaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0", row=row, col=1)
+        fig.update_yaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0",
+                         tickformat=",", row=row, col=1)
+    fig.update_yaxes(title_text="거래량", tickformat=".3s", row=2, col=1)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ─── 차트 ───
@@ -677,13 +808,21 @@ def main():
     """, unsafe_allow_html=True)
 
     # Business Summary
-    if ov.get("summary"):
-        with st.expander("📄 Business Summary", expanded=False):
+    with st.expander("📄 Business Summary", expanded=False):
+        if ov.get("summary"):
+            src_label = ov.get("summary_src", "")
+            src_html = (f'<div style="font-size:.65rem;color:#94a3b8;margin-bottom:6px;">'
+                        f'출처: {src_label}</div>') if src_label else ""
             st.markdown(
-                f'<div style="font-size:.85rem;color:#334155;line-height:1.7;">'
+                f'{src_html}<div style="font-size:.85rem;color:#334155;line-height:1.7;">'
                 f'{ov["summary"]}</div>',
                 unsafe_allow_html=True
             )
+        else:
+            st.caption("Business Summary를 불러올 수 없습니다. (FnGuide / Naver Finance 차단 가능)")
+
+    # 주가 차트
+    render_stock_chart(corp.get("stock_code", ""), corp["corp_name"])
 
     cache_key = f"{corp['corp_code']}_data"
     need_fetch = (
@@ -830,6 +969,52 @@ def main():
                          "재무CF":  fmt(c.get("finCF")),
                          "기말현금": fmt(c.get("endCash"))})
         st.dataframe(rows, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── 공시 ──
+    st.subheader("📢 최근 공시")
+    with st.spinner("공시 조회 중..."):
+        discs, disc_label = fetch_disclosures(corp["corp_code"])
+    if discs:
+        for d in discs:
+            link_html = (f'<a href="{d["link"]}" target="_blank" '
+                         f'style="color:#2563eb;text-decoration:none;">' 
+                         f'{d["report_nm"]}</a>') if d["link"] else d["report_nm"]
+            badge_html = (f'<span style="background:#f1f5f9;color:#475569;'
+                          f'font-size:.65rem;border-radius:3px;padding:1px 5px;'
+                          f'margin-right:5px;">{d["corp_cls"]}</span>') if d["corp_cls"] else ""
+            st.markdown(
+                f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;">' 
+                f'{badge_html}' 
+                f'<span style="font-size:.88rem;color:#1e293b;">{link_html}</span>' 
+                f'<span style="float:right;font-size:.72rem;color:#94a3b8;">' 
+                f'{d["rcept_dt"]} · {d["flr_nm"]}</span></div>',
+                unsafe_allow_html=True
+            )
+    else:
+        st.caption(f"공시 없음 — {disc_label}")
+
+    st.divider()
+
+    # ── 뉴스 ──
+    st.subheader("📰 최근 뉴스")
+    with st.spinner("뉴스 수집 중..."):
+        news = fetch_news(corp["corp_name"])
+    if news:
+        for n in news:
+            st.markdown(
+                f'<div style="padding:8px 0;border-bottom:1px solid #f1f5f9;">' 
+                f'<a href="{n["link"]}" target="_blank" ' 
+                f'style="font-size:.88rem;color:#1e293b;text-decoration:none;">' 
+                f'{n["title"]}</a>' 
+                f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">' 
+                f'{n["source"]}  ·  {n["date"]}</div></div>',
+                unsafe_allow_html=True
+            )
+    else:
+        st.caption("뉴스를 불러올 수 없습니다.")
+
 
 # ══════════════════════════════════════════
 #  메인
