@@ -48,7 +48,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 17
+_CACHE_VER = 18
 
 COLORS = {
     "blue":   "#2563eb",
@@ -1009,18 +1009,63 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         except Exception:
             pass
 
-        # ─ 오늘 PER / PBR (trailingPE, priceToBook) ─
+        # ─ 오늘 PER / PBR ─
+        # ① t.info trailingPE / priceToBook 우선
+        # ② 없으면 오늘가 + 최근 연간 재무로 직접 계산
         try:
-            info = t.info or {}
-            t_per = info.get("trailingPE")
-            t_pbr = info.get("priceToBook")
-            today_pp = {}
-            if t_per and float(t_per) > 0:
-                today_pp["PER"] = round(float(t_per), 1)
-            if t_pbr and float(t_pbr) > 0:
-                today_pp["PBR"] = round(float(t_pbr), 2)
+            today_pp   = {}
+            today_label = datetime.now().strftime("%Y-%m-%d")
+            cur_price  = today_price  # fast_info.last_price (위에서 조회)
+
+            # ① info 우선
+            try:
+                info  = t.info or {}
+                t_per = info.get("trailingPE")
+                t_pbr = info.get("priceToBook")
+                if t_per and float(t_per) > 0:
+                    today_pp["PER"] = round(float(t_per), 1)
+                if t_pbr and float(t_pbr) > 0:
+                    today_pp["PBR"] = round(float(t_pbr), 2)
+            except Exception:
+                pass
+
+            # ② 직접 계산 (info에 없을 때)
+            if cur_price and shares and shares > 0:
+                if "PER" not in today_pp:
+                    try:
+                        import pandas as pd
+                        fin = t.financials
+                        if fin is not None and not fin.empty:
+                            fin_T = fin.T.copy()
+                            latest = fin_T.iloc[0]
+                            for key in ["Net Income", "Net Income Common Stockholders"]:
+                                if key in fin_T.columns and pd.notna(latest[key]):
+                                    ni_today = float(latest[key])
+                                    if ni_today > 0:
+                                        today_pp["PER"] = round(
+                                            cur_price / (ni_today / shares), 1)
+                                    break
+                    except Exception:
+                        pass
+                if "PBR" not in today_pp:
+                    try:
+                        import pandas as pd
+                        bs = t.balance_sheet
+                        if bs is not None and not bs.empty:
+                            bs_T = bs.T.copy()
+                            latest_bs = bs_T.iloc[0]
+                            for key in ["Stockholders Equity", "Common Stock Equity",
+                                        "Total Equity Gross Minority Interest"]:
+                                if key in bs_T.columns and pd.notna(latest_bs[key]):
+                                    eq_today = float(latest_bs[key])
+                                    if eq_today > 0:
+                                        today_pp["PBR"] = round(
+                                            cur_price / (eq_today / shares), 2)
+                                    break
+                    except Exception:
+                        pass
+
             if today_pp:
-                today_label = datetime.now().strftime("%Y-%m-%d")
                 per_pbr[today_label] = today_pp
         except Exception:
             pass
