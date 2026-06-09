@@ -21,8 +21,9 @@ from datetime import datetime
 DART_KEY = "901de77da059b85e095a99ab9f2baf3264f7281f"
 # ══════════════════════════════════════════
 
-BASE       = "https://opendart.fss.or.kr/api"
-YEARS      = list(range(2011, 2026))   # K-IFRS 의무화(2011)~현재
+BASE          = "https://opendart.fss.or.kr/api"
+_LATEST_YEAR  = datetime.now().year - 1        # 마지막 완료 사업연도
+YEARS         = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))  # 현재 기준 최근 15년
 
 ACC = {
     "assets":      ["자산총계"],
@@ -43,7 +44,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 6
+_CACHE_VER = 7
 
 COLORS = {
     "blue":   "#2563eb",
@@ -289,42 +290,31 @@ def _parse_disc_list(items, count):
 
 @st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
 def fetch_disclosures(corp_code, count=5):
-    """거래소 공시(pblntf_ty=I) 우선, 없으면 전체 공시에서 최신 5건."""
-    base_params = {
-        "crtfc_key":  DART_KEY,
-        "corp_code":  corp_code,
-        "page_count": max(count * 3, 15),   # 여유 있게 조회
-        "page_no":    1,
-        "sort":       "date",
-        "sort_mth":   "desc",
-    }
-    # 1차: 거래소 공시
-    try:
-        r = requests.get(f"{BASE}/list.json",
-                         params={**base_params, "pblntf_ty": "I"}, timeout=10)
-        d = r.json()
-        if d.get("status") == "000" and d.get("list"):
-            return _parse_disc_list(d["list"], count), "거래소공시"
-    except Exception:
-        pass
-    # 2차: 정기공시 (사업보고서·분기보고서 등)
-    try:
-        r = requests.get(f"{BASE}/list.json",
-                         params={**base_params, "pblntf_ty": "A"}, timeout=10)
-        d = r.json()
-        if d.get("status") == "000" and d.get("list"):
-            return _parse_disc_list(d["list"], count), "정기공시"
-    except Exception:
-        pass
-    # 3차: 전체 공시 (필터 없음)
-    try:
-        r = requests.get(f"{BASE}/list.json", params=base_params, timeout=10)
-        d = r.json()
-        if d.get("status") == "000" and d.get("list"):
-            return _parse_disc_list(d["list"], count), "전체공시"
-        return [], d.get("message", "조회 결과 없음")
-    except Exception as e:
-        return [], str(e)
+    """DART 공시 목록 조회 — 거래소공시 우선, 없으면 전체공시 폴백."""
+    # 시도할 공시유형 순서: 거래소공시 → 주요사항보고 → 정기공시 → 전체(필터없음)
+    attempts = [
+        ("I", "거래소공시"),
+        ("B", "주요사항보고"),
+        ("A", "정기공시"),
+        ("",  "전체공시"),
+    ]
+    for pblntf_ty, label in attempts:
+        try:
+            params = {
+                "crtfc_key":  DART_KEY,
+                "corp_code":  corp_code,
+                "page_count": count,
+                "page_no":    1,
+            }
+            if pblntf_ty:
+                params["pblntf_ty"] = pblntf_ty
+            r = requests.get(f"{BASE}/list.json", params=params, timeout=10)
+            d = r.json()
+            if d.get("status") == "000" and d.get("list"):
+                return _parse_disc_list(d["list"], count), label
+        except Exception:
+            continue
+    return [], "공시 조회 실패"
 
 
 # ─── 뉴스 ───
@@ -626,7 +616,7 @@ def main():
         st.plotly_chart(fig_re, use_container_width=True)
 
         rows = []
-        for y in years:
+        for y in reversed(years):
             b = data[y]["bs"]
             dr = pct(b.get("liabilities"), b.get("equity"))
             er = pct(b.get("equity"), b.get("assets"))
@@ -655,7 +645,7 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
 
         rows = []
-        for y in years:
+        for y in reversed(years):
             i = data[y]["is"]
             om = pct(i.get("opIncome"),  i.get("revenue"))
             nm = pct(i.get("netIncome"), i.get("revenue"))
@@ -681,7 +671,7 @@ def main():
             st.plotly_chart(fig_ec, use_container_width=True)
 
         rows = []
-        for y in years:
+        for y in reversed(years):
             c = data[y]["cf"]
             rows.append({"연도": y, "영업활동": fmt(c.get("opCF")),
                          "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF")),
