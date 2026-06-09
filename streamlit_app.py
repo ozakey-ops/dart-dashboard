@@ -1515,7 +1515,7 @@ def main():
         )
 
     # ══ 메인 3탭 ══
-    tab_stock, tab_fs, tab_news = st.tabs(["📈 주식", "📊 재무제표", "📢 공시 · 뉴스"])
+    tab_stock, tab_fs, tab_news, tab_emp = st.tabs(["📈 주식", "📊 재무제표", "📢 공시 · 뉴스", "👥 직원 현황"])
 
     # ────────────────────────────────────────
     # 탭 1 : 주식
@@ -1585,7 +1585,7 @@ def main():
             st.divider()
 
             # 재무제표 서브탭
-            sub_bs, sub_is, sub_cf, sub_emp = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표", "👥 직원 수 변동"])
+            sub_bs, sub_is, sub_cf = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표"])
 
             with sub_bs:
                 fig = make_bar(years,
@@ -1657,124 +1657,6 @@ def main():
                                  "기말현금": fmt(c.get("endCash"))})
                 st.dataframe(rows, hide_index=True, use_container_width=True)
 
-            with sub_emp:
-                with st.spinner("직원 현황 조회 중..."):
-                    emp_data = fetch_employee_status(corp["corp_code"], cache_ver=_CACHE_VER)
-
-                if not emp_data:
-                    st.caption("직원 현황 데이터를 찾을 수 없습니다.")
-                else:
-                    eyears = sorted(emp_data.keys())   # 문자열 연도 오름차순
-
-                    # ── ① 정규직 남/여 누적 막대 ──
-                    fig_emp = go.Figure()
-                    fig_emp.add_trace(go.Bar(
-                        name="남 정규직",
-                        x=eyears,
-                        y=[emp_data[y].get("male", 0) for y in eyears],
-                        marker_color="#2563eb",
-                        text=[f'{emp_data[y].get("male", 0):,}' for y in eyears],
-                        textposition="inside",
-                        textfont=dict(size=9, color="white"),
-                    ))
-                    fig_emp.add_trace(go.Bar(
-                        name="여 정규직",
-                        x=eyears,
-                        y=[emp_data[y].get("female", 0) for y in eyears],
-                        marker_color="#ec4899",
-                        text=[f'{emp_data[y].get("female", 0):,}' for y in eyears],
-                        textposition="inside",
-                        textfont=dict(size=9, color="white"),
-                    ))
-                    fig_emp.add_trace(go.Scatter(
-                        name="전체합계",
-                        x=eyears,
-                        y=[emp_data[y].get("total", 0) for y in eyears],
-                        mode="lines+markers",
-                        line=dict(color="#f59e0b", width=2),
-                        marker=dict(size=5),
-                    ))
-                    fig_emp.update_layout(
-                        title_text="정규직 직원 수 추이 (명)",
-                        title_font_color="#1e293b", title_font_size=12,
-                        barmode="stack", **PLOTLY_LAYOUT,
-                    )
-                    st.plotly_chart(fig_emp, use_container_width=True)
-
-                    # ── ② 평균 근속연수 ──
-                    fig_tenure = go.Figure()
-                    fig_tenure.add_trace(go.Scatter(
-                        name="남", x=eyears,
-                        y=[emp_data[y].get("avg_tenure_m", 0) for y in eyears],
-                        mode="lines+markers",
-                        line=dict(color="#2563eb", width=2), marker=dict(size=5),
-                    ))
-                    fig_tenure.add_trace(go.Scatter(
-                        name="여", x=eyears,
-                        y=[emp_data[y].get("avg_tenure_f", 0) for y in eyears],
-                        mode="lines+markers",
-                        line=dict(color="#ec4899", width=2), marker=dict(size=5),
-                    ))
-                    fig_tenure.update_layout(
-                        title_text="평균 근속연수 (년)",
-                        title_font_color="#1e293b", title_font_size=12,
-                        **PLOTLY_LAYOUT,
-                    )
-                    fig_tenure.update_yaxes(ticksuffix="년", gridcolor="#e2e8f0")
-                    st.plotly_chart(fig_tenure, use_container_width=True)
-
-                    # ── ③ 1인 평균 연봉 (데이터 있는 연도만) ──
-                    # jan_salary_am = 1인 평균 연봉(원). 만원 단위로 환산
-                    sal_years = [y for y in eyears
-                                 if emp_data[y].get("salary_m") or emp_data[y].get("salary_f")]
-                    if sal_years:
-                        def _to_man(v):   # 원 → 만원
-                            return round((v or 0) / 10_000)
-                        fig_sal = go.Figure()
-                        fig_sal.add_trace(go.Bar(
-                            name="남",
-                            x=sal_years,
-                            y=[_to_man(emp_data[y].get("salary_m")) for y in sal_years],
-                            marker_color="#2563eb",
-                            text=[f'{_to_man(emp_data[y].get("salary_m")):,}만' for y in sal_years],
-                            textposition="outside", textfont=dict(size=9),
-                        ))
-                        fig_sal.add_trace(go.Bar(
-                            name="여",
-                            x=sal_years,
-                            y=[_to_man(emp_data[y].get("salary_f")) for y in sal_years],
-                            marker_color="#ec4899",
-                            text=[f'{_to_man(emp_data[y].get("salary_f")):,}만' for y in sal_years],
-                            textposition="outside", textfont=dict(size=9),
-                        ))
-                        fig_sal.update_layout(
-                            title_text="1인 평균 연봉 (만원)",
-                            title_font_color="#1e293b", title_font_size=12,
-                            barmode="group", **PLOTLY_LAYOUT,
-                        )
-                        fig_sal.update_yaxes(ticksuffix="만", gridcolor="#e2e8f0")
-                        st.plotly_chart(fig_sal, use_container_width=True)
-
-                    # ── 데이터 테이블 ──
-                    tbl_rows = []
-                    for y in reversed(eyears):
-                        d = emp_data[y]
-                        def _sal_fmt(v):
-                            return f'{round((v or 0)/10_000):,}만원' if v else "-"
-                        tbl_rows.append({
-                            "연도":        y,
-                            "전체합계":    f'{d.get("total", 0):,}',
-                            "남 정규직":   f'{d.get("male", 0):,}',
-                            "여 정규직":   f'{d.get("female", 0):,}',
-                            "남 계약직":   f'{d.get("male_contract", 0):,}',
-                            "여 계약직":   f'{d.get("female_contract", 0):,}',
-                            "남 근속(년)": d.get("avg_tenure_m", "-"),
-                            "여 근속(년)": d.get("avg_tenure_f", "-"),
-                            "남 연봉":     _sal_fmt(d.get("salary_m")),
-                            "여 연봉":     _sal_fmt(d.get("salary_f")),
-                        })
-                    st.dataframe(tbl_rows, hide_index=True, use_container_width=True)
-
     # ────────────────────────────────────────
     # 탭 3 : 공시 · 뉴스
     # ────────────────────────────────────────
@@ -1816,6 +1698,126 @@ def main():
                 )
         else:
             st.caption("뉴스를 불러올 수 없습니다.")
+
+    # ────────────────────────────────────────
+    # 탭 4 : 직원 현황
+    # ────────────────────────────────────────
+    with tab_emp:
+        with st.spinner("직원 현황 조회 중..."):
+            emp_data = fetch_employee_status(corp["corp_code"], cache_ver=_CACHE_VER)
+
+        if not emp_data:
+            st.caption("직원 현황 데이터를 찾을 수 없습니다.")
+        else:
+            eyears = sorted(emp_data.keys())   # 문자열 연도 오름차순
+
+            # ── ① 정규직 남/여 누적 막대 ──
+            fig_emp = go.Figure()
+            fig_emp.add_trace(go.Bar(
+                name="남 정규직",
+                x=eyears,
+                y=[emp_data[y].get("male", 0) for y in eyears],
+                marker_color="#2563eb",
+                text=[f'{emp_data[y].get("male", 0):,}' for y in eyears],
+                textposition="inside",
+                textfont=dict(size=9, color="white"),
+            ))
+            fig_emp.add_trace(go.Bar(
+                name="여 정규직",
+                x=eyears,
+                y=[emp_data[y].get("female", 0) for y in eyears],
+                marker_color="#ec4899",
+                text=[f'{emp_data[y].get("female", 0):,}' for y in eyears],
+                textposition="inside",
+                textfont=dict(size=9, color="white"),
+            ))
+            fig_emp.add_trace(go.Scatter(
+                name="전체합계",
+                x=eyears,
+                y=[emp_data[y].get("total", 0) for y in eyears],
+                mode="lines+markers",
+                line=dict(color="#f59e0b", width=2),
+                marker=dict(size=5),
+            ))
+            fig_emp.update_layout(
+                title_text="정규직 직원 수 추이 (명)",
+                title_font_color="#1e293b", title_font_size=12,
+                barmode="stack", **PLOTLY_LAYOUT,
+            )
+            st.plotly_chart(fig_emp, use_container_width=True)
+
+            # ── ② 평균 근속연수 ──
+            fig_tenure = go.Figure()
+            fig_tenure.add_trace(go.Scatter(
+                name="남", x=eyears,
+                y=[emp_data[y].get("avg_tenure_m", 0) for y in eyears],
+                mode="lines+markers",
+                line=dict(color="#2563eb", width=2), marker=dict(size=5),
+            ))
+            fig_tenure.add_trace(go.Scatter(
+                name="여", x=eyears,
+                y=[emp_data[y].get("avg_tenure_f", 0) for y in eyears],
+                mode="lines+markers",
+                line=dict(color="#ec4899", width=2), marker=dict(size=5),
+            ))
+            fig_tenure.update_layout(
+                title_text="평균 근속연수 (년)",
+                title_font_color="#1e293b", title_font_size=12,
+                **PLOTLY_LAYOUT,
+            )
+            fig_tenure.update_yaxes(ticksuffix="년", gridcolor="#e2e8f0")
+            st.plotly_chart(fig_tenure, use_container_width=True)
+
+            # ── ③ 1인 평균 연봉 (데이터 있는 연도만) ──
+            sal_years = [y for y in eyears
+                         if emp_data[y].get("salary_m") or emp_data[y].get("salary_f")]
+            if sal_years:
+                def _to_man(v):   # 원 → 만원
+                    return round((v or 0) / 10_000)
+                fig_sal = go.Figure()
+                fig_sal.add_trace(go.Bar(
+                    name="남",
+                    x=sal_years,
+                    y=[_to_man(emp_data[y].get("salary_m")) for y in sal_years],
+                    marker_color="#2563eb",
+                    text=[f'{_to_man(emp_data[y].get("salary_m")):,}만' for y in sal_years],
+                    textposition="outside", textfont=dict(size=9),
+                ))
+                fig_sal.add_trace(go.Bar(
+                    name="여",
+                    x=sal_years,
+                    y=[_to_man(emp_data[y].get("salary_f")) for y in sal_years],
+                    marker_color="#ec4899",
+                    text=[f'{_to_man(emp_data[y].get("salary_f")):,}만' for y in sal_years],
+                    textposition="outside", textfont=dict(size=9),
+                ))
+                fig_sal.update_layout(
+                    title_text="1인 평균 연봉 (만원)",
+                    title_font_color="#1e293b", title_font_size=12,
+                    barmode="group", **PLOTLY_LAYOUT,
+                )
+                fig_sal.update_yaxes(ticksuffix="만", gridcolor="#e2e8f0")
+                st.plotly_chart(fig_sal, use_container_width=True)
+
+            # ── 데이터 테이블 ──
+            tbl_rows = []
+            for y in reversed(eyears):
+                d = emp_data[y]
+                def _sal_fmt(v):
+                    return f'{round((v or 0)/10_000):,}만원' if v else "-"
+                tbl_rows.append({
+                    "연도":        y,
+                    "전체합계":    f'{d.get("total", 0):,}',
+                    "남 정규직":   f'{d.get("male", 0):,}',
+                    "여 정규직":   f'{d.get("female", 0):,}',
+                    "남 계약직":   f'{d.get("male_contract", 0):,}',
+                    "여 계약직":   f'{d.get("female_contract", 0):,}',
+                    "남 근속(년)": d.get("avg_tenure_m", "-"),
+                    "여 근속(년)": d.get("avg_tenure_f", "-"),
+                    "남 연봉":     _sal_fmt(d.get("salary_m")),
+                    "여 연봉":     _sal_fmt(d.get("salary_f")),
+                })
+            st.dataframe(tbl_rows, hide_index=True, use_container_width=True)
 
 
 # ══════════════════════════════════════════
