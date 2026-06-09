@@ -17,14 +17,19 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 
 # ══════════════════════════════════════════
-#  API Key — Streamlit Secrets 또는 환경변수
-#  로컬: .streamlit/secrets.toml 에 DART_KEY = "your_key"
-#  Streamlit Cloud: Settings > Secrets 에 동일하게 입력
+#  DART API Key
 # ══════════════════════════════════════════
 try:
     DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", ""))
 except Exception:
     DART_KEY = os.environ.get("DART_KEY", "")
+
+# ══════════════════════════════════════════
+#  KRX 인증 (pykrx 1.2.x 이상)
+#  data.krx.co.kr 회원가입 후 발급된 ID/PW 입력
+# ══════════════════════════════════════════
+os.environ["KRX_ID"] = "YOUR_KRX_ID"
+os.environ["KRX_PW"] = "YOUR_KRX_PW"
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
@@ -50,7 +55,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 11
+_CACHE_VER = 13
 
 COLORS = {
     "blue":   "#2563eb",
@@ -892,69 +897,41 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         return []
 
 
-# ─── pykrx 시장 데이터 ───
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _krx_is_listed(stock_code):
-    """pykrx: 최근 30일 OHLCV 조회로 실제 상장 여부 확인."""
-    try:
-        from pykrx import stock as krx
-        from datetime import timedelta
-        end   = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
-        df = krx.get_market_ohlcv(start, end, stock_code)
-        return df is not None and not df.empty
-    except Exception:
-        return False
-
+# ─── KRX 시장 데이터 (pykrx) ───
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_market_cap_history(stock_code, _ver=1):
-    """pykrx: 연도별 시가총액 (최근 12년).
-    freq='y' 미지원 시 일별 조회 후 pandas resample로 폴백.
-    """
+def fetch_market_cap_history(stock_code, corp_cls="Y", _ver=1):
+    """pykrx: 연도별 시가총액 추이 (최근 10년)."""
     try:
         from pykrx import stock as krx
-        end   = datetime.now().strftime("%Y%m%d")
-        start = str(datetime.now().year - 12) + "0101"
+        cur_year  = datetime.now().year
+        end       = datetime.now().strftime("%Y%m%d")
+        start     = f"{cur_year - 10}0101"
 
-        # 1차 시도: freq='y'
+        # freq='y' 연간 집계 시도
         df = None
-        err_y = ""
         try:
             df = krx.get_market_cap(start, end, stock_code, freq="y")
-        except Exception as _e:
-            err_y = str(_e)
+        except Exception:
+            pass
 
-        # 폴백: daily 조회 후 연말 값만 추출
-        err_daily = ""
-        df_daily_shape = "n/a"
+        # 폴백: 일별 → 연말 resample
         if df is None or df.empty:
-            try:
-                df_daily = krx.get_market_cap(start, end, stock_code)
-                df_daily_shape = f"{df_daily.shape if df_daily is not None else None}"
-                if df_daily is not None and not df_daily.empty:
-                    try:
-                        df = df_daily.resample("YE").last()
-                    except Exception:
-                        df = df_daily.resample("Y").last()
-            except Exception as _e:
-                err_daily = str(_e)
+            df_d = krx.get_market_cap(start, end, stock_code)
+            if df_d is not None and not df_d.empty:
+                try:
+                    df = df_d.resample("YE").last()
+                except Exception:
+                    df = df_d.resample("Y").last()
 
         if df is None or df.empty:
-            diag = f"freq_y={repr(err_y) or 'empty'}, daily_shape={df_daily_shape}, daily_err={repr(err_daily) or 'none'}"
-            if not _krx_is_listed(stock_code):
-                return {"__error__": f"KRX 미상장 종목 (코드 {stock_code})"}
-            return {"__error__": f"시가총액 데이터 없음 [{diag}]"}
+            return {"__error__": f"시가총액 데이터 없음 (코드 {stock_code})"}
 
-        # 컬럼명 탐색 (pykrx 버전별 한/영 혼용 대응)
-        cap_col   = next((c for c in df.columns if "시가총액" in c or "Mktcap" in c), None)
-        share_col = next((c for c in df.columns if "상장주식수" in c or "Shares" in c), None)
-
+        cap_col   = next((c for c in df.columns if "시가총액" in c), None)
+        share_col = next((c for c in df.columns if "상장주식수" in c), None)
         result = {}
         for dt, row in df.iterrows():
-            year = str(dt)[:4]
-            result[year] = {
+            result[str(dt)[:4]] = {
                 "mktcap": round(int(row[cap_col]) / 1e8) if cap_col else 0,
                 "shares": int(row[share_col]) if share_col else 0,
             }
@@ -965,33 +942,31 @@ def fetch_market_cap_history(stock_code, _ver=1):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_investor_trading(stock_code, _ver=1):
-    """pykrx: 투자자별 기간합계 매수/매도/순매수 + 일별 순매수 (최근 1년).
-    get_market_trading_value_by_date 실패 시 일별 차트 생략.
-    """
+    """pykrx: 투자자별 기간합계 매수/매도/순매수 + 일별 순매수 (최근 1년)."""
     try:
         from pykrx import stock as krx
         from datetime import timedelta
-        import pandas as pd
         end   = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
 
-        # 기간 합계 (매수/매도/순매수 by 투자자)
         df_total = None
         try:
             df_total = krx.get_market_trading_value_by_investor(start, end, stock_code)
+            if df_total is not None and df_total.empty:
+                df_total = None
         except Exception:
             pass
 
-        # 일별 순매수 (실패해도 기간 합계만 표시)
         df_daily = None
         try:
             df_daily = krx.get_market_trading_value_by_date(start, end, stock_code)
+            if df_daily is not None and df_daily.empty:
+                df_daily = None
         except Exception:
             pass
 
         if df_total is None and df_daily is None:
-            return {"__error__": "투자자 수급 데이터 조회 실패"}
-
+            return {"__error__": "수급 데이터 없음"}
         return {"daily": df_daily, "total": df_total}
     except Exception as e:
         return {"__error__": str(e)}
@@ -999,36 +974,31 @@ def fetch_investor_trading(stock_code, _ver=1):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_valuation_history(stock_code, _ver=1):
-    """pykrx: 월별 PER/PBR/DIV 추이 (최근 5년).
-    freq='m' 미지원 시 일별 조회 후 월말 값으로 폴백.
-    """
+    """pykrx: 월별 PER/PBR/DIV 추이 (최근 5년)."""
     try:
         from pykrx import stock as krx
-        import pandas as pd
-        end   = datetime.now().strftime("%Y%m%d")
-        start = str(datetime.now().year - 5) + "0101"
+        cur_year = datetime.now().year
+        end      = datetime.now().strftime("%Y%m%d")
+        start    = f"{cur_year - 5}0101"
 
-        # 1차 시도: freq='m'
+        # freq='m' 월간 집계 시도
         df = None
         try:
             df = krx.get_market_fundamental(start, end, stock_code, freq="m")
         except Exception:
             pass
 
-        # 폴백: daily 조회 후 월말 값만 추출
+        # 폴백: 일별 → 월말 resample
         if df is None or df.empty:
-            df_daily = krx.get_market_fundamental(start, end, stock_code)
-            if df_daily is not None and not df_daily.empty:
+            df_d = krx.get_market_fundamental(start, end, stock_code)
+            if df_d is not None and not df_d.empty:
                 try:
-                    df = df_daily.resample("ME").last()
+                    df = df_d.resample("ME").last()
                 except Exception:
-                    df = df_daily.resample("M").last()
+                    df = df_d.resample("M").last()
 
         if df is None or df.empty:
-            if not _krx_is_listed(stock_code):
-                return {"__error__": f"KRX 미상장 종목 (코드 {stock_code}) — KOSPI·KOSDAQ 상장사만 조회 가능"}
             return {"__error__": f"밸류에이션 데이터 없음 (코드 {stock_code})"}
-
         return {"df": df}
     except Exception as e:
         return {"__error__": str(e)}
@@ -1401,12 +1371,13 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         # ────────────────────────────────────
         _section_header("연도별 시가총액 추이")
         with st.spinner("시가총액 데이터 조회 중..."):
-            cap_data = fetch_market_cap_history(stock_code)
+            cap_data = fetch_market_cap_history(stock_code, corp_cls)
         if cap_data.get("__error__"):
             st.caption(f"오류: {cap_data['__error__']}")
         elif cap_data:
-            cap_years = sorted(k for k in cap_data if not k.startswith("_"))
-            cap_vals  = [cap_data[y]["mktcap"] for y in cap_years]
+            cap_years = sorted(k for k in cap_data
+                               if not k.startswith("_") and isinstance(cap_data[k], dict))
+            cap_vals  = [cap_data[y].get("mktcap", 0) for y in cap_years]
             fig_cap = go.Figure()
             fig_cap.add_trace(go.Bar(
                 x=cap_years,
