@@ -465,9 +465,9 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         ticker  = f"{stock_code}{suffix}"
         # 기간 & 간격 설정
         cfg = {
-            "1mo":   dict(period="1mo",  interval="1d"),
-            "3mo":   dict(period="3mo",  interval="1d"),
             "6mo":   dict(period="6mo",  interval="1d"),
+            "24mo":  dict(period="2y",   interval="1d"),
+            "36mo":  dict(period="3y",   interval="1d"),
             "month": dict(period="10y",  interval="1mo"),
             "year":  dict(period="max",  interval="3mo"),   # 분기 집계 후 연도별 처리
         }
@@ -478,7 +478,7 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
 
         df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
         df = df[df["Volume"] > 0]
-        if timeframe in ("1mo", "3mo", "6mo"):
+        if timeframe in ("6mo", "24mo", "36mo"):
             df = df[df.index.dayofweek < 5]       # 일봉: 주말 제거 (0=월 ~ 4=금)
             df = df[df["High"] > df["Low"]]        # 일봉: 고가=저가인 phantom 캔들 제거
         data = []
@@ -520,22 +520,22 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     # 기간 선택 + 이동평균선 입력 (한 줄)
     col_period, col_ma = st.columns([5, 1])
     with col_period:
-        period_labels = ["1달", "3달", "6달", "월봉", "연봉"]
+        period_labels = ["6달", "24달", "36달", "월봉", "연봉"]
         sel = st.radio("기간", period_labels, horizontal=True,
                        key=f"sp_{stock_code}", label_visibility="collapsed")
     with col_ma:
         ma_period = int(st.number_input("이동평균선", min_value=0, max_value=300,
                                         value=20, key=f"ma_{stock_code}"))
-    tf_map = {"1달": "1mo", "3달": "3mo", "6달": "6mo", "월봉": "month", "연봉": "year"}
+    tf_map = {"6달": "6mo", "24달": "24mo", "36달": "36mo", "월봉": "month", "연봉": "year"}
     hint = "  ·  두 번 탭  자동 스케일"
     title_map = {
-        "1달": f"{corp_name}  일봉 (최근 1개월){hint}",
-        "3달": f"{corp_name}  일봉 (최근 3개월){hint}",
-        "6달": f"{corp_name}  일봉 (최근 6개월){hint}",
-        "월봉": f"{corp_name}  월봉 (최근 10년){hint}",
-        "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
+        "6달":  f"{corp_name}  일봉 (최근 6개월){hint}",
+        "24달": f"{corp_name}  일봉 (최근 24개월){hint}",
+        "36달": f"{corp_name}  일봉 (최근 36개월){hint}",
+        "월봉":  f"{corp_name}  월봉 (최근 10년){hint}",
+        "연봉":  f"{corp_name}  연봉 (최근 20년){hint}",
     }
-    is_daily = sel in ("1달", "3달", "6달")
+    is_daily = sel in ("6달", "24달", "36달")
 
     with st.spinner("주가 데이터 조회 중..."):
         chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=6)
