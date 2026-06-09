@@ -21,7 +21,10 @@ from datetime import datetime
 #  로컬: .streamlit/secrets.toml 에 DART_KEY = "your_key"
 #  Streamlit Cloud: Settings > Secrets 에 동일하게 입력
 # ══════════════════════════════════════════
-DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", ""))
+try:
+    DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", ""))
+except Exception:
+    DART_KEY = os.environ.get("DART_KEY", "")
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
