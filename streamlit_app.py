@@ -517,10 +517,15 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     """캔들스틱 + 거래량 차트 (일/월/연봉 선택)."""
     if not stock_code:
         return
-    # 기간 선택 라디오
-    period_labels = ["1달", "3달", "6달", "월봉", "연봉"]
-    sel = st.radio("기간", period_labels, horizontal=True,
-                   key=f"sp_{stock_code}", label_visibility="collapsed")
+    # 기간 선택 + 이동평균선 입력 (한 줄)
+    col_period, col_ma = st.columns([5, 1])
+    with col_period:
+        period_labels = ["1달", "3달", "6달", "월봉", "연봉"]
+        sel = st.radio("기간", period_labels, horizontal=True,
+                       key=f"sp_{stock_code}", label_visibility="collapsed")
+    with col_ma:
+        ma_period = int(st.number_input("이동평균선", min_value=0, max_value=300,
+                                        value=20, key=f"ma_{stock_code}"))
     tf_map = {"1달": "1mo", "3달": "3mo", "6달": "6mo", "월봉": "month", "연봉": "year"}
     hint = "  ·  두 번 탭  자동 스케일"
     title_map = {
@@ -530,20 +535,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         "월봉": f"{corp_name}  월봉 (최근 10년){hint}",
         "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
     }
-    # 일봉: 이동평균선 설정 (0이면 미표시)
     is_daily = sel in ("1달", "3달", "6달")
-    if is_daily:
-        ma_cols = st.columns(4)
-        ma_defaults = [5, 20, 60, 120]
-        ma_colors   = ["#f59e0b", "#8b5cf6", "#10b981", "#f43f5e"]
-        ma_periods  = []
-        for i, col in enumerate(ma_cols):
-            with col:
-                v = st.number_input(f"MA{i+1}", min_value=0, max_value=300,
-                                    value=ma_defaults[i],
-                                    key=f"ma{i+1}_{stock_code}",
-                                    label_visibility="visible")
-                ma_periods.append(int(v))
 
     with st.spinner("주가 데이터 조회 중..."):
         chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=6)
@@ -559,7 +551,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     # 상승=빨강 / 하락=파랑 (한국식)
     vol_colors = ["#dc2626" if c >= o else "#2563eb"
                   for c, o in zip(closes, opens_)]
-    show_legend = is_daily and any(p > 0 for p in ma_periods)
+    show_ma = is_daily and ma_period > 0 and len(closes) >= ma_period
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         vertical_spacing=0.04, row_heights=[0.72, 0.28])
     fig.add_trace(go.Candlestick(
@@ -570,18 +562,16 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         line_width=1,
     ), row=1, col=1)
     # 이동평균선 (일봉 + period > 0 일 때만)
-    if is_daily:
-        for period, color in zip(ma_periods, ma_colors):
-            if period > 0 and len(closes) >= period:
-                ma_vals = [None] * (period - 1) + [
-                    round(sum(closes[j - period:j]) / period, 0)
-                    for j in range(period, len(closes) + 1)
-                ]
-                fig.add_trace(go.Scatter(
-                    x=dates, y=ma_vals, mode="lines",
-                    name=f"MA{period}",
-                    line=dict(color=color, width=1.4),
-                ), row=1, col=1)
+    if show_ma:
+        ma_vals = [None] * (ma_period - 1) + [
+            round(sum(closes[j - ma_period:j]) / ma_period, 0)
+            for j in range(ma_period, len(closes) + 1)
+        ]
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma_vals, mode="lines",
+            name=f"MA{ma_period}",
+            line=dict(color="#f59e0b", width=1.4),
+        ), row=1, col=1)
     fig.add_trace(go.Bar(
         x=dates, y=volumes, name="거래량",
         marker_color=vol_colors, opacity=0.75,
@@ -594,8 +584,8 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         xaxis_rangeslider_visible=False,
         margin=dict(l=8, r=8, t=38, b=8),
         height=420,
-        showlegend=show_legend,
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+        showlegend=show_ma,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
                     font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         hovermode="x unified",
     )
