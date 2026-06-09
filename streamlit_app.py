@@ -419,7 +419,7 @@ def fetch_news(company_name, count=5):
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=4):
+def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=5):
     """Yahoo Finance(yfinance)로 주가 OHLCV 조회.
     corp_cls: "Y"=KOSPI(.KS) / "K"=KOSDAQ(.KQ)
     timeframe: "day"(일봉) / "month"(월봉) / "year"(연봉)
@@ -436,7 +436,7 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=4):
             "month": dict(period="10y",  interval="1mo"),
             "year":  dict(period="max",  interval="3mo"),   # 분기 집계 후 연도별 처리
         }
-        kwargs = cfg.get(timeframe, cfg["day"])
+        kwargs = cfg.get(timeframe, cfg["6mo"])
         df = yf.Ticker(ticker).history(**kwargs, auto_adjust=True)
         if df.empty:
             return []
@@ -495,7 +495,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
     }
     with st.spinner("주가 데이터 조회 중..."):
-        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=4)
+        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=5)
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
