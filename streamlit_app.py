@@ -275,6 +275,7 @@ def fetch_all_years(corp_code, fs_div, _ver=_CACHE_VER):  # _ver 변경 시 캐�
     return all_data
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_year(corp_code, year, fs_div):
     try:
         r = requests.get(
@@ -695,7 +696,6 @@ def fetch_large_holding_reports(corp_code, count=20, _ver=1):
         return []
 
 
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_executive_stock_reports(corp_code, count=30, _ver=1):
     """DART elestock.json — 임원·주요주주 소유보고 (corp_code only, no bsns_year)."""
@@ -828,7 +828,7 @@ def fetch_employee_status(corp_code, cache_ver=1):
     return result
 
 
-# ─── 주가 차트 (yfinance / Yahoo Finance) ───
+# ─── 주가 차트 ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
@@ -890,6 +890,114 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         return []
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
+    """yfinance: 연도별 시가총액 + PER/PBR 계산 (최근 10년).
+    시가총액 = 연말 종가 × 발행주식수 (현재 기준)
+    PER     = 연말 종가 / (연간순이익 / 발행주식수)
+    PBR     = 연말 종가 / (자본총계  / 발행주식수)
+    """
+    try:
+        import yfinance as yf
+        import pandas as pd
+
+        suffix = ".KQ" if corp_cls == "K" else ".KS"
+        t = yf.Ticker(f"{stock_code}{suffix}")
+
+        # 발행주식수
+        shares = None
+        try:
+            shares = t.fast_info.shares
+        except Exception:
+            pass
+        if not shares:
+            shares = (t.info or {}).get("sharesOutstanding")
+
+        # 연도별 연말 종가 (월봉 12년치)
+        hist = t.history(period="12y", interval="1mo", auto_adjust=True)
+        if hist.empty:
+            return {"__error__": "주가 데이터 없음"}
+        hist.index = pd.to_datetime(hist.index).tz_localize(None)
+
+        cur_year = datetime.now().year
+        year_closes = {}
+        for yr in range(cur_year - 9, cur_year + 1):
+            yr_data = hist[hist.index.year == yr]
+            if not yr_data.empty:
+                year_closes[yr] = float(yr_data["Close"].iloc[-1])
+
+        # ─ 시가총액 ─
+        mktcap = {}
+        if shares:
+            for yr, close in year_closes.items():
+                mktcap[str(yr)] = round(close * shares / 1e8)
+
+        # ─ PER / PBR ─
+        per_pbr = {}
+        try:
+            fin = t.financials
+            bs  = t.balance_sheet
+            if fin is not None and not fin.empty:
+                fin_T = fin.T.copy()
+                fin_T.index = pd.to_datetime(fin_T.index).tz_localize(None)
+                bs_T = pd.DataFrame()
+                if bs is not None and not bs.empty:
+                    bs_T = bs.T.copy()
+                    bs_T.index = pd.to_datetime(bs_T.index).tz_localize(None)
+
+                for idx_date in fin_T.index:
+                    yr    = idx_date.year
+                    close = year_closes.get(yr)
+                    if close is None:
+                        continue
+
+                    # 순이익
+                    ni = None
+                    for key in ["Net Income", "Net Income Common Stockholders"]:
+                        if key in fin_T.columns:
+                            v = fin_T.loc[idx_date, key]
+                            if pd.notna(v):
+                                ni = float(v)
+                                break
+
+                    # 자본총계
+                    eq = None
+                    if not bs_T.empty:
+                        closest = min(bs_T.index, key=lambda d: abs((d - idx_date).days))
+                        for key in ["Stockholders Equity", "Common Stock Equity",
+                                    "Total Equity Gross Minority Interest"]:
+                            if key in bs_T.columns:
+                                v = bs_T.loc[closest, key]
+                                if pd.notna(v):
+                                    eq = float(v)
+                                    break
+
+                    per = pbr = None
+                    if shares and shares > 0:
+                        if ni and ni > 0:
+                            per = round(close / (ni / shares), 1)
+                        if eq and eq > 0:
+                            pbr = round(close / (eq / shares), 2)
+
+                    if per is not None or pbr is not None:
+                        per_pbr[str(yr)] = {"PER": per, "PBR": pbr}
+        except Exception:
+            pass
+
+        return {"mktcap": mktcap, "per_pbr": per_pbr}
+    except Exception as e:
+        return {"__error__": str(e)}
+
+
+def _section_header(title, sub=""):
+    sub_html = (f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;'
+                f'margin-left:6px;">{sub}</span>') if sub else ""
+    st.markdown(
+        f'<div style="font-size:.78rem;font-weight:700;color:#1e293b;'
+        f'margin:14px 0 6px;border-left:3px solid #2563eb;padding-left:8px;">'
+        f'{title}{sub_html}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
@@ -1023,16 +1131,6 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
     # ── 최대주주 현황 + 지분변동 공시 ──
     if corp_code:
-        def _section_header(title, sub=""):
-            sub_html = (f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;'
-                        f'margin-left:6px;">{sub}</span>') if sub else ""
-            st.markdown(
-                f'<div style="font-size:.78rem;font-weight:700;color:#1e293b;'
-                f'margin:14px 0 6px;border-left:3px solid #2563eb;padding-left:8px;">'
-                f'{title}{sub_html}</div>',
-                unsafe_allow_html=True,
-            )
-
         # ① 최대주주 현황 테이블
         with st.spinner("최대주주 데이터 조회 중..."):
             shareholders = fetch_major_shareholders(corp_code)
@@ -1136,7 +1234,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
         # ③ 대량보유상황보고
         with st.spinner("대량보유상황보고 조회 중..."):
-            large_holdings = fetch_large_holding_reports(corp_code, count=15)
+            large_holdings = fetch_large_holding_reports(corp_code, count=15, _ver=_CACHE_VER)
 
         _section_header("대량보유상황보고")
         if large_holdings:
@@ -1254,9 +1352,107 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         else:
             st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
 
+        # ─────────────────────────────────────────────
+        # ⑤ 연도별 시가총액 막대 차트
+        # ─────────────────────────────────────────────
+        _section_header("연도별 시가총액", "yfinance · 연말 종가 × 발행주식수 기준 (억 원)")
+        yf_data = fetch_yf_annual_data(stock_code, corp_cls, _ver=_CACHE_VER)
+        if "__error__" in yf_data:
+            st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
+        else:
+            mktcap = yf_data.get("mktcap", {})
+            if mktcap:
+                years_mc = sorted(mktcap.keys())
+                vals_mc  = [mktcap[y] for y in years_mc]
+                fig_mc = go.Figure(
+                    go.Bar(
+                        x=years_mc,
+                        y=vals_mc,
+                        marker_color=COLORS["blue"],
+                        text=[f"{v:,}" for v in vals_mc],
+                        textposition="outside",
+                        textfont=dict(size=9, color="#64748b"),
+                    )
+                )
+                fig_mc.update_layout(
+                    **{k: v for k, v in PLOTLY_LAYOUT.items() if k != "yaxis"},
+                    yaxis=dict(
+                        title="억 원",
+                        tickformat=",",
+                        gridcolor="#e2e8f0",
+                        tickfont=dict(color="#64748b"),
+                    ),
+                )
+                st.plotly_chart(fig_mc, use_container_width=True)
+            else:
+                st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
 
+        # ─────────────────────────────────────────────
+        # ⑥ 투자자별 수급 (yfinance 미지원 안내)
+        # ─────────────────────────────────────────────
+        _section_header("투자자별 수급", "외국인 · 기관 · 개인 누적 매수/매도/순매수")
+        st.info(
+            "📌  투자자별 수급 데이터(외국인·기관·개인 매수/매도 대금)는 yfinance에서 제공되지 않습니다.\n\n"
+            "한국거래소(KRX) OpenAPI 또는 증권사 API 연동이 필요합니다.",
+        )
 
-# ─── 차트 ───
+        # ─────────────────────────────────────────────
+        # ⑦ PER / PBR 밸류에이션 추이 (이중 Y축)
+        # ─────────────────────────────────────────────
+        _section_header("PER / PBR 밸류에이션 추이", "yfinance 재무제표 + 연말 종가 기준")
+        if "__error__" not in yf_data:
+            per_pbr = yf_data.get("per_pbr", {})
+            if per_pbr:
+                years_pp = sorted(per_pbr.keys())
+                per_vals = [per_pbr[y].get("PER") for y in years_pp]
+                pbr_vals = [per_pbr[y].get("PBR") for y in years_pp]
+
+                fig_vl = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_vl.add_trace(
+                    go.Scatter(
+                        x=years_pp, y=per_vals, name="PER",
+                        mode="lines+markers",
+                        line=dict(color=COLORS["blue"], width=2),
+                        marker=dict(size=5),
+                        connectgaps=True,
+                    ),
+                    secondary_y=False,
+                )
+                fig_vl.add_trace(
+                    go.Scatter(
+                        x=years_pp, y=pbr_vals, name="PBR",
+                        mode="lines+markers",
+                        line=dict(color=COLORS["orange"], width=2, dash="dot"),
+                        marker=dict(size=5),
+                        connectgaps=True,
+                    ),
+                    secondary_y=True,
+                )
+                fig_vl.update_layout(
+                    **PLOTLY_LAYOUT,
+                    legend=dict(
+                        bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#1e293b", size=11),
+                    ),
+                )
+                fig_vl.update_yaxes(
+                    title_text="PER (배)",
+                    ticksuffix="x",
+                    gridcolor="#e2e8f0",
+                    tickfont=dict(color="#64748b"),
+                    secondary_y=False,
+                )
+                fig_vl.update_yaxes(
+                    title_text="PBR (배)",
+                    ticksuffix="x",
+                    gridcolor="#e2e8f0",
+                    tickfont=dict(color="#64748b"),
+                    secondary_y=True,
+                )
+                st.plotly_chart(fig_vl, use_container_width=True)
+            else:
+                st.caption("PER/PBR 계산에 필요한 재무데이터(순이익, 자본총계)를 가져올 수 없습니다.")
+
 
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
@@ -1294,8 +1490,8 @@ def make_line(years, series, title, is_pct=False):
     suffix = "%" if is_pct else ""
     fig.update_layout(title_text=title, title_font_color="#1e293b",
                       title_font_size=12,
-                      yaxis=dict(ticksuffix=suffix, gridcolor="#273047",
-                                 tickfont=dict(color="#768390")),
+                      yaxis=dict(ticksuffix=suffix, gridcolor="#e2e8f0",
+                                 tickfont=dict(color="#64748b")),
                       **{k: v for k, v in PLOTLY_LAYOUT.items() if k != "yaxis"})
     return fig
 
