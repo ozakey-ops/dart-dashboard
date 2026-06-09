@@ -296,6 +296,26 @@ def fetch_company_overview(corp_code, stock_code):
     return result
 
 
+# ─── 환율 ───
+
+@st.cache_data(ttl=3600, show_spinner=False)   # 1시간 캐시
+def fetch_exchange_rates():
+    """Frankfurter API로 환율 조회 (무료, 키 불필요)."""
+    try:
+        r = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW,JPY", timeout=8)
+        d = r.json()
+        krw = d["rates"]["KRW"]
+        jpy = d["rates"]["JPY"]
+        return {
+            "usd_krw":     round(krw, 1),          # 원/달러
+            "jpy100_krw":  round(krw / jpy * 100, 1),  # 원/100엔
+            "jpy_usd":     round(jpy, 2),           # 엔/달러
+            "date":        d.get("date", ""),
+        }
+    except Exception:
+        return {}
+
+
 # ─── 공시 ───
 
 def _parse_disc_list(items, count):
@@ -399,7 +419,7 @@ def fetch_news(company_name, count=5):
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=3):
+def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=4):
     """Yahoo Finance(yfinance)로 주가 OHLCV 조회.
     corp_cls: "Y"=KOSPI(.KS) / "K"=KOSDAQ(.KQ)
     timeframe: "day"(일봉) / "month"(월봉) / "year"(연봉)
@@ -410,7 +430,9 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=3):
         ticker  = f"{stock_code}{suffix}"
         # 기간 & 간격 설정
         cfg = {
-            "day":   dict(period="6mo",  interval="1d"),
+            "1mo":   dict(period="1mo",  interval="1d"),
+            "3mo":   dict(period="3mo",  interval="1d"),
+            "6mo":   dict(period="6mo",  interval="1d"),
             "month": dict(period="10y",  interval="1mo"),
             "year":  dict(period="max",  interval="3mo"),   # 분기 집계 후 연도별 처리
         }
@@ -421,7 +443,7 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=3):
 
         df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
         df = df[df["Volume"] > 0]
-        if timeframe == "day":
+        if timeframe in ("1mo", "3mo", "6mo"):
             df = df[df["High"] > df["Low"]]   # 일봉: 고가=저가인 phantom 캔들 제거
         data = []
         for dt, row in df.iterrows():
@@ -436,7 +458,7 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day", _ver=3):
             })
 
         # 연봉: 분기 데이터를 연도별로 집계
-        if timeframe == "year" and data:
+        if timeframe == "year" and data:  # noqa
             yearly = {}
             for d in data:
                 yr = d["year"]
@@ -460,18 +482,20 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     if not stock_code:
         return
     # 기간 선택 라디오
-    period_labels = ["일봉", "월봉", "연봉"]
+    period_labels = ["1달", "3달", "6달", "월봉", "연봉"]
     sel = st.radio("기간", period_labels, horizontal=True,
                    key=f"sp_{stock_code}", label_visibility="collapsed")
-    tf_map = {"일봉": "day", "월봉": "month", "연봉": "year"}
+    tf_map = {"1달": "1mo", "3달": "3mo", "6달": "6mo", "월봉": "month", "연봉": "year"}
     hint = "  ·  두 번 탭  자동 스케일"
     title_map = {
-        "일봉": f"{corp_name}  일봉 (최근 6개월){hint}",
-        "월봉": f"{corp_name}  월봉 (최근 5년){hint}",
+        "1달": f"{corp_name}  일봉 (최근 1개월){hint}",
+        "3달": f"{corp_name}  일봉 (최근 3개월){hint}",
+        "6달": f"{corp_name}  일봉 (최근 6개월){hint}",
+        "월봉": f"{corp_name}  월봉 (최근 10년){hint}",
         "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
     }
     with st.spinner("주가 데이터 조회 중..."):
-        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=3)
+        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=4)
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
@@ -713,6 +737,31 @@ def main():
       {addr_html}{url_html}
     </div>
     """, unsafe_allow_html=True)
+
+    # 환율 카드
+    fx = fetch_exchange_rates()
+    if fx:
+        def fx_item(label, value, unit="원"):
+            return (f'<div style="flex:1;text-align:center;padding:8px 4px;">'
+                    f'<div style="font-size:.68rem;color:#64748b;margin-bottom:3px;">{label}</div>'
+                    f'<div style="font-size:1rem;font-weight:700;color:#1e293b;">'
+                    f'{value:,.1f} <span style="font-size:.68rem;font-weight:400;color:#94a3b8;">{unit}</span></div>'
+                    f'</div>')
+        st.markdown(
+            f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
+            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 8px;margin:0 0 12px 0;">'
+            f'<div style="display:flex;align-items:center;border-bottom:none;">'
+            f'{fx_item("원 / 달러", fx["usd_krw"])}'
+            f'<div style="color:#e2e8f0;">│</div>'
+            f'{fx_item("원 / 100엔", fx["jpy100_krw"])}'
+            f'<div style="color:#e2e8f0;">│</div>'
+            f'{fx_item("엔 / 달러", fx["jpy_usd"], "엔")}'
+            f'</div>'
+            f'<div style="text-align:right;font-size:.62rem;color:#cbd5e1;padding:0 8px 4px;">'
+            f'기준일 {fx["date"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
     # 주가 차트
     render_stock_chart(corp.get("stock_code", ""), corp["corp_name"], ov.get("corp_cls_raw", "Y"))
