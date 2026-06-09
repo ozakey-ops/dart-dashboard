@@ -479,60 +479,131 @@ def fetch_news(company_name, count=15):
 # ─── 최대주주 현황 (DART majorstock) ───
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_major_shareholders(corp_code, _ver=2):
+def fetch_major_shareholders(corp_code, _ver=3):
     """DART majorstock.json — 최대주주 현황 조회.
-    가장 최근 사업연도부터 폴백하며 데이터를 찾는다.
-    반환: list of dict {name, relation, shares, ratio, year, rcode} or []
+    1) list.json으로 실제 제출된 사업/반기 보고서의 접수번호·사업연도 파악
+    2) 해당 연도·보고서코드로 majorstock.json 호출
+    반환: list of dict or {"error": str}
     """
-    reprt_codes = ["11011", "11012", "11013", "11014"]   # 사업보고서→반기→1Q→3Q
-    # _LATEST_YEAR 이후 현재 연도까지 포함 (당해 사업보고서 제출된 경우 대비)
+    import re
+
+    if not corp_code:
+        return {"error": "corp_code 없음"}
+
+    # ── Step1: 실제 제출된 정기보고서 목록 조회 ──
+    # pblntf_ty=A : 정기공시  (사업·반기·분기보고서 모두 포함)
+    candidate_pairs = []   # [(bsns_year, reprt_code), ...]
+    try:
+        from datetime import timedelta
+        end_de   = datetime.now().strftime("%Y%m%d")
+        start_de = (datetime.now() - timedelta(days=365 * 4)).strftime("%Y%m%d")
+        r = requests.get(
+            f"{BASE}/list.json",
+            params={
+                "crtfc_key": DART_KEY,
+                "corp_code": corp_code,
+                "pblntf_ty": "A",          # 정기공시
+                "bgn_de": start_de,
+                "end_de": end_de,
+                "page_count": 20,
+                "sort": "date",
+                "sort_mth": "desc",
+            },
+            timeout=10,
+        )
+        d = r.json()
+        rcode_map = {
+            "사업보고서":   "11011",
+            "반기보고서":   "11012",
+            "분기보고서":   "11013",
+        }
+        if d.get("status") == "000":
+            for item in d.get("list", []):
+                nm = item.get("report_nm", "")
+                # 보고서명에서 사업연도 추출 ex) "사업보고서 (2025.12)"
+                m = re.search(r"\((\d{4})\.", nm)
+                if not m:
+                    # 접수일 기준 연도 - 1 폴백
+                    rcept_dt = item.get("rcept_dt", "")
+                    year = int(rcept_dt[:4]) - 1 if rcept_dt else None
+                else:
+                    year = int(m.group(1))
+                rcode = None
+                for keyword, code in rcode_map.items():
+                    if keyword in nm:
+                        rcode = code
+                        break
+                if year and rcode:
+                    pair = (year, rcode)
+                    if pair not in candidate_pairs:
+                        candidate_pairs.append(pair)
+    except Exception:
+        pass
+
+    # 폴백: 최근 4년 × 사업/반기보고서
     cur_year = datetime.now().year
-    for year in range(cur_year, cur_year - 4, -1):
-        for rcode in reprt_codes:
-            try:
-                r = requests.get(
-                    f"{BASE}/majorstock.json",
-                    params={"crtfc_key": DART_KEY, "corp_code": corp_code,
-                            "bsns_year": str(year), "reprt_code": rcode},
-                    timeout=10,
-                )
-                data = r.json()
-                if data.get("status") != "000":
-                    continue
-                items = data.get("list") or []
-                rows = []
-                for item in items:
-                    name        = item.get("nm", "").strip()
-                    relation    = item.get("relate", "").strip()
-                    # 기말 보유주식수 / 기말 지분율
-                    shares_s    = item.get("trmend_posesn_stock_co", "").replace(",", "").strip()
-                    ratio_pct_s = item.get("trmend_posesn_stock_qota_rt", "").replace(",", "").strip()
-                    stock_knd   = item.get("stock_knd", "").strip()  # 주식종류 (보통주/우선주)
-                    rm          = item.get("rm", "").strip()         # 비고
-                    try:
-                        shares = int(shares_s) if shares_s else 0
-                    except ValueError:
-                        shares = 0
-                    try:
-                        ratio_pct = float(ratio_pct_s) if ratio_pct_s else None
-                    except ValueError:
-                        ratio_pct = None
-                    if name:
-                        rows.append({
-                            "name": name,
-                            "relation": relation,
-                            "shares": shares,
-                            "ratio": ratio_pct,
-                            "stock_knd": stock_knd,
-                            "rm": rm,
-                            "year": year,
-                            "rcode": rcode,
-                        })
-                if rows:
-                    return rows
-            except Exception:
+    for y in range(cur_year - 1, cur_year - 5, -1):
+        for rc in ["11011", "11012"]:
+            if (y, rc) not in candidate_pairs:
+                candidate_pairs.append((y, rc))
+
+    # ── Step2: majorstock.json 호출 ──
+    last_status = ""
+    for bsns_year, reprt_code in candidate_pairs:
+        try:
+            r = requests.get(
+                f"{BASE}/majorstock.json",
+                params={
+                    "crtfc_key": DART_KEY,
+                    "corp_code": corp_code,
+                    "bsns_year": str(bsns_year),
+                    "reprt_code": reprt_code,
+                },
+                timeout=10,
+            )
+            data = r.json()
+            status = data.get("status", "")
+            last_status = f"{bsns_year}/{reprt_code}: {status} {data.get('message','')}"
+            if status != "000":
                 continue
-    return []
+            items = data.get("list") or []
+            rows = []
+            for item in items:
+                name        = (item.get("nm") or "").strip()
+                relation    = (item.get("relate") or "").strip()
+                shares_s    = (item.get("trmend_posesn_stock_co") or "").replace(",", "").strip()
+                ratio_pct_s = (item.get("trmend_posesn_stock_qota_rt") or "").replace(",", "").strip()
+                stock_knd   = (item.get("stock_knd") or "").strip()
+                rm          = (item.get("rm") or "").strip()
+                try:
+                    shares = int(shares_s) if shares_s else 0
+                except ValueError:
+                    shares = 0
+                try:
+                    ratio_pct = float(ratio_pct_s) if ratio_pct_s else None
+                except ValueError:
+                    ratio_pct = None
+                # nm이 없어도 기록 (법인 주주는 nm 대신 corp_name 사용하는 경우 있음)
+                if not name:
+                    name = (item.get("corp_name") or "").strip()
+                if name:
+                    rows.append({
+                        "name": name,
+                        "relation": relation,
+                        "shares": shares,
+                        "ratio": ratio_pct,
+                        "stock_knd": stock_knd,
+                        "rm": rm,
+                        "year": bsns_year,
+                        "rcode": reprt_code,
+                    })
+            if rows:
+                return rows
+        except Exception as e:
+            last_status = str(e)
+            continue
+
+    return {"error": last_status or "데이터 없음"}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -781,6 +852,12 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
         rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
                        "11013": "1분기보고서", "11014": "3분기보고서"}
+        # 오류 dict vs 리스트 구분
+        sh_error = None
+        if isinstance(shareholders, dict):
+            sh_error = shareholders.get("error", "")
+            shareholders = []
+
         if shareholders:
             ref = shareholders[0]
             ref_label = f"{ref['year']}년 {rcode_label.get(ref['rcode'], ref['rcode'])}"
@@ -822,7 +899,10 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             )
         else:
             _section_header("최대주주 현황")
-            st.caption("최대주주 데이터를 찾을 수 없습니다.")
+            if sh_error:
+                st.caption(f"최대주주 데이터를 불러올 수 없습니다. (응답: {sh_error})")
+            else:
+                st.caption("최대주주 데이터가 없습니다.")
 
         # ② 지분변동 공시 목록
         with st.spinner("지분공시 조회 중..."):
