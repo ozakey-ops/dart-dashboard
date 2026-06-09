@@ -47,7 +47,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 9
+_CACHE_VER = 10
 
 COLORS = {
     "blue":   "#2563eb",
@@ -821,37 +821,40 @@ def fetch_employee_status(corp_code, cache_ver=1):
             if raw.get("status") != "000":
                 continue
             all_items = raw.get("list") or []
-            # '성별합계' 행 우선; 없으면 '합계' 행 시도
-            agg_rows = [x for x in all_items
-                        if (x.get("fo_bbm") or "").strip() == "성별합계"]
-            if not agg_rows:
-                agg_rows = [x for x in all_items
-                            if (x.get("fo_bbm") or "").strip() == "합계"]
+            if not all_items:
+                continue
+
+            # ── 집계 행 추출 ──
+            # 전략: fo_bbm에 "합계" 포함된 행 우선 → 없으면 성별별 sm 최댓값 행 사용
+            def _pick_agg(sex):
+                rows = [x for x in all_items
+                        if (x.get("sexdstn") or "").strip() == sex]
+                if not rows:
+                    return None
+                # "합계" 포함 fo_bbm 우선
+                agg = [x for x in rows if "합계" in (x.get("fo_bbm") or "")]
+                if agg:
+                    return agg[0]
+                # 없으면 sm(전체) 최대 행
+                return max(rows, key=lambda x: _emp_parse_int(x.get("sm")))
+
             rec = {}
-            for item in agg_rows:
-                sex = (item.get("sexdstn") or "").strip()
-                if sex == "남":
-                    rec["male"]          = _emp_parse_int(item.get("rgllbr_co"))
-                    rec["male_contract"] = _emp_parse_int(item.get("cnttk_co"))
-                    rec["male_total"]    = _emp_parse_int(item.get("sm"))
-                    rec["avg_tenure_m"]  = _emp_parse_float(item.get("avrg_cnwk_sdytrn"))
-                    rec["salary_m"]      = _emp_parse_salary(item.get("jan_salary_am"))
-                elif sex == "여":
-                    rec["female"]          = _emp_parse_int(item.get("rgllbr_co"))
-                    rec["female_contract"] = _emp_parse_int(item.get("cnttk_co"))
-                    rec["female_total"]    = _emp_parse_int(item.get("sm"))
-                    rec["avg_tenure_f"]    = _emp_parse_float(item.get("avrg_cnwk_sdytrn"))
-                    rec["salary_f"]        = _emp_parse_salary(item.get("jan_salary_am"))
+            for sex, prefix in [("남", "male"), ("여", "female")]:
+                item = _pick_agg(sex)
+                if not item:
+                    continue
+                rec[prefix]                  = _emp_parse_int(item.get("rgllbr_co"))
+                rec[f"{prefix}_contract"]    = _emp_parse_int(item.get("cnttk_co"))
+                rec[f"{prefix}_total"]       = _emp_parse_int(item.get("sm"))
+                rec[f"avg_tenure_{prefix[0]}"] = _emp_parse_float(item.get("avrg_cnwk_sdytrn"))
+                rec[f"salary_{prefix[0]}"]   = _emp_parse_salary(item.get("jan_salary_am"))
+
             if rec:
                 rec["total"] = rec.get("male_total", 0) + rec.get("female_total", 0)
                 result[str(year)] = rec
-        except Exception as e:
-            # 연도별 실패는 건너뛰되 심각한 오류는 기록
-            import traceback
-            result[f"_err_{year}"] = str(e)
+        except Exception:
             continue
-    # 오류 키 제거 후 반환
-    return {k: v for k, v in result.items() if not k.startswith("_err_")}
+    return result
 
 
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
