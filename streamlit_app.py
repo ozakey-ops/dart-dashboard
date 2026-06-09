@@ -288,7 +288,8 @@ def fetch_company_overview(corp_code, stock_code):
                 "acc_mt":    f"{d.get('acc_mt', '')}월" if d.get("acc_mt") else "",
                 "phn_no":    d.get("phn_no", ""),
                 "adres":     d.get("adres", ""),
-                "hm_url":    (d.get("hm_url") or "").strip().rstrip("/"),
+                "hm_url":    (lambda u: ("https://" + u) if u and not u.startswith(("http://","https://")) else u)
+                             ((d.get("hm_url") or "").strip().rstrip("/")),
             }
     except Exception:
         pass
