@@ -48,7 +48,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 18
+_CACHE_VER = 19
 
 COLORS = {
     "blue":   "#2563eb",
@@ -892,10 +892,11 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
-    """yfinance: 연도별 시가총액 + PER/PBR 계산 (최근 15년).
-    시가총액 = 연말 종가 × 발행주식수 (현재 기준)
-    PER     = 연말 종가 / (연간순이익 / 발행주식수)
-    PBR     = 연말 종가 / (자본총계  / 발행주식수)
+    """yfinance 기반 연도별 시가총액 + PER/PBR (최근 10년)
+    - 시가총액 : 연봉 연말 종가 × 발행주식수 / 현재 연도는 당일 현재가(fast_info.market_cap)
+    - PER      : 연봉 연말 종가 / (손익계산서 당해연도 순이익 / 발행주식수)
+    - PBR      : 연봉 연말 종가 / (재무상태표 당해연도 자본총계 / 발행주식수)
+    - 오늘 포인트: 당일 현재가 + 최신 연간 재무로 직접 계산
     """
     try:
         import yfinance as yf
@@ -904,7 +905,7 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         suffix = ".KQ" if corp_cls == "K" else ".KS"
         t = yf.Ticker(f"{stock_code}{suffix}")
 
-        # 발행주식수
+        # ── 발행주식수 ──
         shares = None
         try:
             shares = t.fast_info.shares
@@ -913,7 +914,7 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         if not shares:
             shares = (t.info or {}).get("sharesOutstanding")
 
-        # 당일 시가총액 (yfinance fast_info — KRX 공식 유통주식수 기반)
+        # ── 당일 시가총액 (fast_info.market_cap — KRX 유통주식수 기반) ──
         today_mktcap_eok = None
         try:
             mc = t.fast_info.market_cap
@@ -922,29 +923,27 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         except Exception:
             pass
 
-        # 당일 현재가 (시가총액 직접 사용 불가 시 fallback)
+        # ── 당일 현재가 ──
         today_price = None
         try:
             today_price = float(t.fast_info.last_price)
         except Exception:
             pass
 
-        # 연도별 연말 종가 (월봉 17년치 — 15년치 확보를 위해 여유 포함)
-        hist = t.history(period="17y", interval="1mo", auto_adjust=True)
+        # ── 연봉 연말 종가 (12년치 월봉 → 각 연도 마지막 월 종가) ──
+        hist = t.history(period="12y", interval="1mo", auto_adjust=True)
         if hist.empty:
             return {"__error__": "주가 데이터 없음"}
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
 
         cur_year = datetime.now().year
-        year_closes = {}   # PER/PBR용: 연도별 연말 종가
-        for yr in range(cur_year - 14, cur_year + 1):
+        year_closes = {}  # {연도(int): 연말 종가}
+        for yr in range(cur_year - 9, cur_year + 1):   # 10년
             yr_data = hist[hist.index.year == yr]
             if not yr_data.empty:
                 year_closes[yr] = float(yr_data["Close"].iloc[-1])
 
-        # ─ 시가총액 ─
-        # 과거: 연말 종가 × yfinance 발행주식수
-        # 현재 연도: fast_info.market_cap 우선 (KRX 공식 유통주식수 기반)
+        # ── 시가총액 (과거: 연말 종가 × 발행주식수 / 현재 연도: fast_info.market_cap) ──
         mktcap = {}
         if shares:
             for yr, close in year_closes.items():
@@ -957,116 +956,66 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         elif shares and cur_year in year_closes:
             mktcap[str(cur_year)] = round(year_closes[cur_year] * shares / 1e8)
 
-        # ─ PER / PBR ─
+        # ── PER / PBR — 연봉 연말 종가 + 손익계산서(순이익) + 재무상태표(자본총계) ──
         per_pbr = {}
         try:
-            fin = t.financials
-            bs  = t.balance_sheet
-            if fin is not None and not fin.empty:
-                fin_T = fin.T.copy()
-                fin_T.index = pd.to_datetime(fin_T.index).tz_localize(None)
-                bs_T = pd.DataFrame()
-                if bs is not None and not bs.empty:
-                    bs_T = bs.T.copy()
-                    bs_T.index = pd.to_datetime(bs_T.index).tz_localize(None)
+            fin = t.financials    # 손익계산서 (annual income statement)
+            bs  = t.balance_sheet # 재무상태표  (annual balance sheet)
+            if fin is None or fin.empty:
+                raise ValueError("재무 데이터 없음")
 
-                for idx_date in fin_T.index:
-                    yr    = idx_date.year
-                    close = year_closes.get(yr)
-                    if close is None:
-                        continue
+            fin_T = fin.T.copy()
+            fin_T.index = pd.to_datetime(fin_T.index).tz_localize(None)
 
-                    # 순이익
-                    ni = None
-                    for key in ["Net Income", "Net Income Common Stockholders"]:
-                        if key in fin_T.columns:
-                            v = fin_T.loc[idx_date, key]
-                            if pd.notna(v):
-                                ni = float(v)
-                                break
+            bs_T = pd.DataFrame()
+            if bs is not None and not bs.empty:
+                bs_T = bs.T.copy()
+                bs_T.index = pd.to_datetime(bs_T.index).tz_localize(None)
 
-                    # 자본총계
-                    eq = None
-                    if not bs_T.empty:
-                        closest = min(bs_T.index, key=lambda d: abs((d - idx_date).days))
-                        for key in ["Stockholders Equity", "Common Stock Equity",
-                                    "Total Equity Gross Minority Interest"]:
-                            if key in bs_T.columns:
-                                v = bs_T.loc[closest, key]
-                                if pd.notna(v):
-                                    eq = float(v)
-                                    break
+            NI_KEYS = ["Net Income", "Net Income Common Stockholders"]
+            EQ_KEYS = ["Stockholders Equity", "Common Stock Equity",
+                       "Total Equity Gross Minority Interest"]
 
-                    per = pbr = None
-                    if shares and shares > 0:
-                        if ni and ni > 0:
-                            per = round(close / (ni / shares), 1)
-                        if eq and eq > 0:
-                            pbr = round(close / (eq / shares), 2)
+            def _get_val(df_T, idx, keys):
+                for k in keys:
+                    if k in df_T.columns:
+                        v = df_T.loc[idx, k]
+                        if pd.notna(v):
+                            return float(v)
+                return None
 
-                    if per is not None or pbr is not None:
-                        per_pbr[str(yr)] = {"PER": per, "PBR": pbr}
-        except Exception:
-            pass
+            # 연도별 계산 (fin_T 각 행 = 해당 회계연도)
+            for idx_date in fin_T.index:
+                yr    = idx_date.year
+                close = year_closes.get(yr)
+                if close is None or not shares or shares <= 0:
+                    continue
 
-        # ─ 오늘 PER / PBR ─
-        # ① t.info trailingPE / priceToBook 우선
-        # ② 없으면 오늘가 + 최근 연간 재무로 직접 계산
-        try:
-            today_pp   = {}
-            today_label = datetime.now().strftime("%Y-%m-%d")
-            cur_price  = today_price  # fast_info.last_price (위에서 조회)
+                ni = _get_val(fin_T, idx_date, NI_KEYS)
+                eq = None
+                if not bs_T.empty:
+                    closest = min(bs_T.index, key=lambda d: abs((d - idx_date).days))
+                    eq = _get_val(bs_T, closest, EQ_KEYS)
 
-            # ① info 우선
-            try:
-                info  = t.info or {}
-                t_per = info.get("trailingPE")
-                t_pbr = info.get("priceToBook")
-                if t_per and float(t_per) > 0:
-                    today_pp["PER"] = round(float(t_per), 1)
-                if t_pbr and float(t_pbr) > 0:
-                    today_pp["PBR"] = round(float(t_pbr), 2)
-            except Exception:
-                pass
+                per = round(close / (ni  / shares), 1) if (ni  and ni  > 0) else None
+                pbr = round(close / (eq  / shares), 2) if (eq  and eq  > 0) else None
 
-            # ② 직접 계산 (info에 없을 때)
-            if cur_price and shares and shares > 0:
-                if "PER" not in today_pp:
-                    try:
-                        import pandas as pd
-                        fin = t.financials
-                        if fin is not None and not fin.empty:
-                            fin_T = fin.T.copy()
-                            latest = fin_T.iloc[0]
-                            for key in ["Net Income", "Net Income Common Stockholders"]:
-                                if key in fin_T.columns and pd.notna(latest[key]):
-                                    ni_today = float(latest[key])
-                                    if ni_today > 0:
-                                        today_pp["PER"] = round(
-                                            cur_price / (ni_today / shares), 1)
-                                    break
-                    except Exception:
-                        pass
-                if "PBR" not in today_pp:
-                    try:
-                        import pandas as pd
-                        bs = t.balance_sheet
-                        if bs is not None and not bs.empty:
-                            bs_T = bs.T.copy()
-                            latest_bs = bs_T.iloc[0]
-                            for key in ["Stockholders Equity", "Common Stock Equity",
-                                        "Total Equity Gross Minority Interest"]:
-                                if key in bs_T.columns and pd.notna(latest_bs[key]):
-                                    eq_today = float(latest_bs[key])
-                                    if eq_today > 0:
-                                        today_pp["PBR"] = round(
-                                            cur_price / (eq_today / shares), 2)
-                                    break
-                    except Exception:
-                        pass
+                if per is not None or pbr is not None:
+                    per_pbr[str(yr)] = {"PER": per, "PBR": pbr}
 
-            if today_pp:
-                per_pbr[today_label] = today_pp
+            # ── 오늘 포인트: 당일 현재가 + 최신 연간 재무로 직접 계산 ──
+            if today_price and shares and shares > 0:
+                latest_fin = fin_T.iloc[0]
+                ni_t = _get_val(fin_T, fin_T.index[0], NI_KEYS)
+                eq_t = _get_val(bs_T,  bs_T.index[0],  EQ_KEYS) if not bs_T.empty else None
+                today_pp = {}
+                if ni_t and ni_t > 0:
+                    today_pp["PER"] = round(today_price / (ni_t / shares), 1)
+                if eq_t and eq_t > 0:
+                    today_pp["PBR"] = round(today_price / (eq_t / shares), 2)
+                if today_pp:
+                    per_pbr[datetime.now().strftime("%Y-%m-%d")] = today_pp
+
         except Exception:
             pass
 
