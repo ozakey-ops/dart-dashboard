@@ -265,6 +265,72 @@ def fetch_year(corp_code, year, fs_div):
         return None
 
 
+# ─── 기업 개요 ───
+
+@st.cache_data(ttl=86400, show_spinner=False)   # 1일 캐시
+def fetch_company_overview(corp_code, stock_code):
+    """DART company.json으로 기업 기본 정보 + FnGuide Business Summary."""
+    import re as _re
+    result = {}
+
+    # 1. DART 기본 정보
+    try:
+        r = requests.get(f"{BASE}/company.json",
+                         params={"crtfc_key": DART_KEY, "corp_code": corp_code},
+                         timeout=10)
+        d = r.json()
+        if d.get("status") == "000":
+            cls_map = {"Y": "유가증권(KOSPI)", "K": "코스닥(KOSDAQ)", "N": "코넥스", "E": "기타"}
+            est = d.get("est_dt", "")
+            result = {
+                "ceo_nm":    d.get("ceo_nm", ""),
+                "corp_cls":  cls_map.get(d.get("corp_cls", ""), ""),
+                "est_dt":    f"{est[:4]}.{est[4:6]}" if len(est) >= 6 else "",
+                "acc_mt":    f"{d.get('acc_mt', '')}월" if d.get("acc_mt") else "",
+                "phn_no":    d.get("phn_no", ""),
+                "adres":     d.get("adres", ""),
+                "hm_url":    (d.get("hm_url") or "").strip().rstrip("/"),
+            }
+    except Exception:
+        pass
+
+    # 2. FnGuide Business Summary
+    result["summary"] = ""
+    if stock_code:
+        try:
+            url = (f"https://comp.fnguide.com/svo/ASPSYSTEM/ASP_Company.asp"
+                   f"?pGB=KB&gicode=A{stock_code}")
+            headers = {
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/124.0.0.0 Safari/537.36"),
+                "Accept-Language": "ko-KR,ko;q=0.9",
+                "Referer": "https://comp.fnguide.com/",
+            }
+            r = requests.get(url, headers=headers, timeout=12)
+            r.encoding = "utf-8"
+            html = r.text
+            # Business Summary 텍스트 추출 — 여러 패턴 시도
+            patterns = [
+                r'Business\s*Summary[\s\S]{0,200}?<td[^>]*>([\s\S]{100,2000}?)</td>',
+                r'bizSummary[^>]*>([\s\S]{100,2000}?)</(?:td|div)>',
+                r'<div[^>]+id=["\']bizSummary["\'][^>]*>([\s\S]{50,2000}?)</div>',
+                r'작성일[^<]*</[^>]+>[\s\S]{0,300}?<td[^>]*>([\s\S]{100,2000}?)</td>',
+            ]
+            for pat in patterns:
+                m = _re.search(pat, html, _re.IGNORECASE)
+                if m:
+                    text = _re.sub(r'<[^>]+>', ' ', m.group(1))
+                    text = _re.sub(r'\s+', ' ', text).strip()
+                    if len(text) > 80:
+                        result["summary"] = text[:800]
+                        break
+        except Exception:
+            pass
+
+    return result
+
+
 # ─── 공시 ───
 
 def _parse_disc_list(items, count):
@@ -532,20 +598,61 @@ def main():
     if not corp:
         return
 
-    # 재무데이터 로드
+    # 기업 개요 조회
+    with st.spinner("기업 정보 조회 중..."):
+        ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
+
+    # 기업 카드
+    cls_badge = (f'<span style="background:#eff6ff;color:#2563eb;font-size:.68rem;'
+                 f'border-radius:4px;padding:2px 7px;margin-left:8px;font-weight:600;">'
+                 f'{ov.get("corp_cls","")}</span>') if ov.get("corp_cls") else ""
+
+    meta_rows = []
+    if ov.get("ceo_nm"):   meta_rows.append(f'<span><b>대표</b> {ov["ceo_nm"]}</span>')
+    if ov.get("est_dt"):   meta_rows.append(f'<span><b>설립</b> {ov["est_dt"]}</span>')
+    if ov.get("acc_mt"):   meta_rows.append(f'<span><b>결산</b> {ov["acc_mt"]}</span>')
+    if ov.get("phn_no"):   meta_rows.append(f'<span><b>전화</b> {ov["phn_no"]}</span>')
+    meta_html = (''.join(
+        f'<span style="color:#94a3b8;margin:0 6px;">|</span>{m}' if i else m
+        for i, m in enumerate(meta_rows)
+    )) if meta_rows else ""
+
+    addr_html = (f'<div style="font-size:.72rem;color:#64748b;margin-top:4px;">'
+                 f'📍 {ov["adres"]}</div>') if ov.get("adres") else ""
+    url_html  = (f'<div style="font-size:.72rem;margin-top:2px;">'
+                 f'🌐 <a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">'
+                 f'{ov["hm_url"]}</a></div>') if ov.get("hm_url") else ""
+
     st.markdown(f"""
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
                 box-shadow:0 1px 3px rgba(0,0,0,.06);
-                padding:12px 18px;margin:12px 0;display:flex;align-items:center;gap:12px;">
-      <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
-                  padding:4px 12px;font-weight:700;color:#fff;">{corp['corp_name'][:2]}</div>
-      <div>
-        <div style="font-weight:700;color:#1e293b;">{corp['corp_name']}</div>
-        <div style="font-size:.72rem;color:#64748b;">코드: {corp['corp_code']}
-          {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}</div>
+                padding:14px 18px;margin:12px 0;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:{'8px' if meta_rows else '0'};">
+        <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
+                    padding:4px 12px;font-weight:700;color:#fff;flex-shrink:0;">
+          {corp['corp_name'][:2]}</div>
+        <div style="flex:1;">
+          <div style="font-weight:700;color:#1e293b;font-size:1.05rem;">
+            {corp['corp_name']}{cls_badge}</div>
+          <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">
+            코드: {corp['corp_code']}
+            {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}
+          </div>
+        </div>
       </div>
+      {f'<div style="font-size:.78rem;color:#475569;margin-top:4px;">{meta_html}</div>' if meta_html else ''}
+      {addr_html}{url_html}
     </div>
     """, unsafe_allow_html=True)
+
+    # Business Summary
+    if ov.get("summary"):
+        with st.expander("📄 Business Summary", expanded=False):
+            st.markdown(
+                f'<div style="font-size:.85rem;color:#334155;line-height:1.7;">'
+                f'{ov["summary"]}</div>',
+                unsafe_allow_html=True
+            )
 
     cache_key = f"{corp['corp_code']}_data"
     need_fetch = (
