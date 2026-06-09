@@ -892,7 +892,7 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
-    """yfinance: 연도별 시가총액 + PER/PBR 계산 (최근 10년).
+    """yfinance: 연도별 시가총액 + PER/PBR 계산 (최근 15년).
     시가총액 = 연말 종가 × 발행주식수 (현재 기준)
     PER     = 연말 종가 / (연간순이익 / 발행주식수)
     PBR     = 연말 종가 / (자본총계  / 발행주식수)
@@ -913,15 +913,15 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         if not shares:
             shares = (t.info or {}).get("sharesOutstanding")
 
-        # 연도별 연말 종가 (월봉 12년치)
-        hist = t.history(period="12y", interval="1mo", auto_adjust=True)
+        # 연도별 연말 종가 (월봉 17년치 — 15년치 확보를 위해 여유 포함)
+        hist = t.history(period="17y", interval="1mo", auto_adjust=True)
         if hist.empty:
             return {"__error__": "주가 데이터 없음"}
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
 
         cur_year = datetime.now().year
         year_closes = {}
-        for yr in range(cur_year - 9, cur_year + 1):
+        for yr in range(cur_year - 14, cur_year + 1):
             yr_data = hist[hist.index.year == yr]
             if not yr_data.empty:
                 year_closes[yr] = float(yr_data["Close"].iloc[-1])
@@ -1388,16 +1388,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                 st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
 
         # ─────────────────────────────────────────────
-        # ⑥ 투자자별 수급 (yfinance 미지원 안내)
-        # ─────────────────────────────────────────────
-        _section_header("투자자별 수급", "외국인 · 기관 · 개인 누적 매수/매도/순매수")
-        st.info(
-            "📌  투자자별 수급 데이터(외국인·기관·개인 매수/매도 대금)는 yfinance에서 제공되지 않습니다.\n\n"
-            "한국거래소(KRX) OpenAPI 또는 증권사 API 연동이 필요합니다.",
-        )
-
-        # ─────────────────────────────────────────────
-        # ⑦ PER / PBR 밸류에이션 추이 (이중 Y축)
+        # ⑥ PER / PBR 밸류에이션 추이 (이중 Y축)
         # ─────────────────────────────────────────────
         _section_header("PER / PBR 밸류에이션 추이", "yfinance 재무제표 + 연말 종가 기준")
         if "__error__" not in yf_data:
