@@ -420,6 +420,7 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="day"):
             return []
 
         df = df.dropna(subset=["Open", "High", "Low", "Close"])
+        df = df[df["Volume"] > 0]
         data = []
         for dt, row in df.iterrows():
             data.append({
