@@ -913,6 +913,13 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         if not shares:
             shares = (t.info or {}).get("sharesOutstanding")
 
+        # 당일 현재가 (시가총액 최신 기준)
+        today_price = None
+        try:
+            today_price = float(t.fast_info.last_price)
+        except Exception:
+            pass
+
         # 연도별 연말 종가 (월봉 17년치 — 15년치 확보를 위해 여유 포함)
         hist = t.history(period="17y", interval="1mo", auto_adjust=True)
         if hist.empty:
@@ -920,16 +927,23 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
 
         cur_year = datetime.now().year
-        year_closes = {}
+        year_closes = {}           # PER/PBR용: 모든 연도 연말 종가
+        mktcap_closes = {}         # 시가총액용: 과거는 연말, 당해는 당일가
         for yr in range(cur_year - 14, cur_year + 1):
             yr_data = hist[hist.index.year == yr]
             if not yr_data.empty:
-                year_closes[yr] = float(yr_data["Close"].iloc[-1])
+                close = float(yr_data["Close"].iloc[-1])
+                year_closes[yr] = close
+                # 시가총액: 현재 연도는 당일 현재가 우선 사용
+                if yr == cur_year and today_price:
+                    mktcap_closes[yr] = today_price
+                else:
+                    mktcap_closes[yr] = close
 
         # ─ 시가총액 ─
         mktcap = {}
         if shares:
-            for yr, close in year_closes.items():
+            for yr, close in mktcap_closes.items():
                 mktcap[str(yr)] = round(close * shares / 1e8)
 
         # ─ PER / PBR ─
@@ -1355,20 +1369,23 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         # ─────────────────────────────────────────────
         # ⑤ 연도별 시가총액 막대 차트
         # ─────────────────────────────────────────────
-        _section_header("연도별 시가총액", "yfinance · 연말 종가 × 발행주식수 기준 (억 원)")
+        _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
         yf_data = fetch_yf_annual_data(stock_code, corp_cls, _ver=_CACHE_VER)
         if "__error__" in yf_data:
             st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
         else:
             mktcap = yf_data.get("mktcap", {})
             if mktcap:
-                years_mc = sorted(mktcap.keys())
-                vals_mc  = [mktcap[y] for y in years_mc]
+                cur_yr_str   = str(datetime.now().year)
+                years_mc     = sorted(mktcap.keys())
+                vals_mc      = [mktcap[y] for y in years_mc]
+                bar_colors   = [COLORS["orange"] if y == cur_yr_str else COLORS["blue"]
+                                for y in years_mc]
                 fig_mc = go.Figure(
                     go.Bar(
                         x=years_mc,
                         y=vals_mc,
-                        marker_color=COLORS["blue"],
+                        marker_color=bar_colors,
                         text=[f"{v:,}" for v in vals_mc],
                         textposition="outside",
                         textfont=dict(size=9, color="#64748b"),
