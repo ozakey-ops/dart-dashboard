@@ -1429,11 +1429,8 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                     secondary_y=True,
                 )
                 fig_vl.update_layout(
-                    **PLOTLY_LAYOUT,
-                    legend=dict(
-                        bgcolor="rgba(0,0,0,0)",
-                        font=dict(color="#1e293b", size=11),
-                    ),
+                    **{k: v for k, v in PLOTLY_LAYOUT.items()
+                       if k not in ("yaxis", "legend")},
                 )
                 fig_vl.update_yaxes(
                     title_text="PER (배)",
