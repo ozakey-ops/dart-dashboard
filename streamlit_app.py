@@ -589,6 +589,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
             + ic("등락률", f"{sym}{abs(chg_pct):.2f}%", clr)
             + ic("거래량", f"{last['volume']:,.0f}")
             + ic("거래대금", f"{turnover_eok:,.0f}억")
+            + f'<span style="float:right;font-size:.65rem;color:#94a3b8;">{last["date"]}</span>'
             + f'</div>',
             unsafe_allow_html=True
         )
