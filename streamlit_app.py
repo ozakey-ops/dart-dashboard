@@ -101,6 +101,41 @@ st.markdown("""
   [data-testid="stTab"][aria-selected="true"] { color:#2563eb; border-bottom-color:#2563eb; }
   .stCaption                         { color:#64748b; }
   div[data-baseweb="tab-highlight"]  { background:#2563eb !important; }
+
+  /* ── 모바일 반응형 ── */
+  @media (max-width: 768px) {
+    /* 좌우 여백 축소 */
+    .block-container { padding-left:0.5rem !important; padding-right:0.5rem !important; }
+
+    /* 헤더 타이틀 폰트 축소 */
+    .dart-title { font-size:.95rem !important; }
+
+    /* 수식 입력 최소 너비 보장 */
+    [data-testid="stNumberInput"] input { min-width: 0 !important; font-size:.88rem !important; }
+
+    /* 데이터프레임 가로 스크롤 */
+    .stDataFrame { overflow-x: auto !important; }
+
+    /* 탭 폰트 축소 */
+    [data-testid="stTab"] { font-size:.82rem !important; padding: 6px 8px !important; }
+
+    /* 메트릭 카드 패딩 축소 */
+    .metric-card { padding:10px 12px !important; }
+    .metric-value { font-size:1rem !important; }
+  }
+
+  @media (max-width: 480px) {
+    /* 초소형 화면: 모든 다열 레이아웃을 1열로 스택 */
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+      min-width: 45% !important;
+      flex: 1 1 45% !important;
+    }
+    /* 3열 이상은 완전 1열로 */
+    [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]:nth-child(3)) > [data-testid="stColumn"] {
+      min-width: 100% !important;
+      flex: none !important;
+    }
+  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -441,6 +476,57 @@ def fetch_news(company_name, count=15):
         return []
 
 
+# ─── 최대주주 현황 (DART majorstock) ───
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_major_shareholders(corp_code, _ver=1):
+    """DART majorstock.json — 최대주주 현황 조회.
+    가장 최근 사업연도부터 폴백하며 데이터를 찾는다.
+    반환: list of dict {name, relation, shares, ratio, note} or []
+    """
+    reprt_codes = ["11011", "11012", "11013", "11014"]   # 사업보고서 → 반기 → 1Q → 3Q 순
+    for year in range(_LATEST_YEAR, _LATEST_YEAR - 3, -1):
+        for rcode in reprt_codes:
+            try:
+                r = requests.get(
+                    f"{BASE}/majorstock.json",
+                    params={"crtfc_key": DART_KEY, "corp_code": corp_code,
+                            "bsns_year": str(year), "reprt_code": rcode},
+                    timeout=10,
+                )
+                data = r.json()
+                if data.get("status") == "000" and data.get("list"):
+                    rows = []
+                    for item in data["list"]:
+                        name    = item.get("nm", "").strip()
+                        relation= item.get("relate", "").strip()
+                        shares_s= item.get("stock_co", "").replace(",", "").strip()
+                        ratio_s = item.get("trmend_posesn_stock_co", "").replace(",", "").strip()
+                        ratio_pct_s = item.get("trmend_posesn_stock_qota_rt", "").replace(",", "").strip()
+                        try:
+                            shares = int(shares_s) if shares_s else 0
+                        except ValueError:
+                            shares = 0
+                        try:
+                            ratio_pct = float(ratio_pct_s) if ratio_pct_s else None
+                        except ValueError:
+                            ratio_pct = None
+                        if name:
+                            rows.append({
+                                "name": name,
+                                "relation": relation,
+                                "shares": shares,
+                                "ratio": ratio_pct,
+                                "year": year,
+                                "rcode": rcode,
+                            })
+                    if rows:
+                        return rows
+            except Exception:
+                continue
+    return []
+
+
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -503,16 +589,16 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         return []
 
 
-def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
+def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
     """캔들스틱 + 거래량 차트 (일/월/연봉 선택)."""
     if not stock_code:
         return
-    # 기간 선택 + 이평선 입력 (한 줄)
-    col_period, col_ma1, col_ma2 = st.columns([5, 1, 1])
-    with col_period:
-        period_labels = ["6달", "2년", "3년", "월봉", "연봉"]
-        sel = st.radio("기간", period_labels, horizontal=True,
-                       key=f"sp_{stock_code}", label_visibility="collapsed")
+    # 기간 선택 (전체 너비)
+    period_labels = ["6달", "2년", "3년", "월봉", "연봉"]
+    sel = st.radio("기간", period_labels, horizontal=True,
+                   key=f"sp_{stock_code}", label_visibility="collapsed")
+    # 이평선 입력 — 2열로 분리 (모바일에서도 충분한 너비 확보)
+    col_ma1, col_ma2 = st.columns(2)
     with col_ma1:
         ma_period1 = int(st.number_input("이평선1", min_value=0, max_value=300,
                                          value=25, key=f"ma1b_{stock_code}"))
@@ -632,6 +718,58 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     fig.update_yaxes(title_text="거래량", tickformat=".3s", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
+    # ── 최대주주 현황 ──
+    if corp_code:
+        with st.spinner("최대주주 데이터 조회 중..."):
+            shareholders = fetch_major_shareholders(corp_code)
+        if shareholders:
+            ref_year  = shareholders[0]["year"]
+            ref_rcode = shareholders[0]["rcode"]
+            rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
+                           "11013": "1분기보고서", "11014": "3분기보고서"}
+            ref_label = f"{ref_year}년 {rcode_label.get(ref_rcode, ref_rcode)}"
+
+            # 헤더
+            st.markdown(
+                f'<div style="font-size:.78rem;font-weight:700;color:#1e293b;'
+                f'margin:12px 0 6px;border-left:3px solid #2563eb;padding-left:8px;">'
+                f'최대주주 현황 <span style="font-size:.68rem;font-weight:400;'
+                f'color:#94a3b8;margin-left:6px;">{ref_label}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+            # 테이블 행 생성
+            rows_html = ""
+            for i, sh in enumerate(shareholders):
+                bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
+                ratio_str = (f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-")
+                shares_str = f"{sh['shares']:,}" if sh["shares"] else "-"
+                rows_html += (
+                    f'<tr style="background:{bg};">'
+                    f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh["name"]}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#64748b;text-align:center;">{sh["relation"]}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{shares_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;">{ratio_str}</td>'
+                    f'</tr>'
+                )
+
+            table_html = (
+                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;'
+                f'margin-bottom:16px;">'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f1f5f9;">'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:left;font-weight:600;">주주명</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:center;font-weight:600;">관계</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">보유주식수</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">지분율</th>'
+                f'</tr></thead>'
+                f'<tbody>{rows_html}</tbody>'
+                f'</table></div>'
+            )
+            st.markdown(table_html, unsafe_allow_html=True)
+        else:
+            st.caption("최대주주 데이터를 찾을 수 없습니다.")
+
 
 # ─── 차트 ───
 
@@ -736,7 +874,7 @@ def main():
                   background:linear-gradient(135deg,#2563eb,#7c3aed);
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
-        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">기업 주식 시황 및 재무 대시보드</div>
+        <div class="dart-title" style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">기업 주식 시황 및 재무 대시보드</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -850,32 +988,28 @@ def main():
             if chg is not None and chg != 0:
                 sym_c  = "▲" if chg > 0 else "▼"
                 color  = "#dc2626" if chg > 0 else "#2563eb"
-                chg_html = (f'<span style="font-size:.65rem;color:{color};margin-left:4px;">'
+                chg_html = (f'<span style="font-size:.62rem;color:{color};margin-left:3px;">'
                             f'{sym_c}{abs(chg):{fmt}}</span>')
             else:
                 chg_html = ""
             val_str = f"{value:,.3f}" if fmt == ".3f" else (f"{value:,.2f}" if fmt == ".2f" else f"{value:,.1f}")
-            unit_html = (f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;margin-left:3px;">{unit}</span>'
+            unit_html = (f'<span style="font-size:.65rem;font-weight:400;color:#94a3b8;margin-left:2px;">{unit}</span>'
                          if unit else "")
-            return (f'<div style="flex:1;text-align:center;padding:8px 4px;">'
-                    f'<div style="font-size:.68rem;color:#64748b;margin-bottom:3px;">{label}</div>'
-                    f'<div style="font-size:1rem;font-weight:700;color:#1e293b;">'
+            return (f'<div style="flex:1;min-width:45%;text-align:center;padding:8px 6px;">'
+                    f'<div style="font-size:.65rem;color:#64748b;margin-bottom:2px;white-space:nowrap;">{label}</div>'
+                    f'<div style="font-size:.95rem;font-weight:700;color:#1e293b;white-space:nowrap;">'
                     f'{val_str}{chg_html}{unit_html}</div>'
                     f'</div>')
-        divider = '<div style="color:#e2e8f0;flex-shrink:0;">│</div>'
         st.markdown(
             f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
-            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 8px;margin:0 0 12px 0;">'
-            f'<div style="display:flex;align-items:center;">'
+            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 4px 2px;margin:0 0 12px 0;">'
+            f'<div style="display:flex;flex-wrap:wrap;align-items:center;">'
             + fx_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
-            + divider
-            + fx_item("원 / 100엔",     md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
-            + divider
-            + fx_item("엔 / 달러",      md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
-            + divider
+            + fx_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
+            + fx_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
             + fx_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
             + f'</div>'
-            f'<div style="text-align:right;font-size:.65rem;color:#94a3b8;padding:0 10px 5px;">'
+            f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;padding:0 8px 4px;">'
             f'기준일 {md["date"]}</div>'
             f'</div>',
             unsafe_allow_html=True
@@ -888,7 +1022,8 @@ def main():
     # 탭 1 : 주식
     # ────────────────────────────────────────
     with tab_stock:
-        render_stock_chart(corp.get("stock_code", ""), corp["corp_name"], ov.get("corp_cls_raw", "Y"))
+        render_stock_chart(corp.get("stock_code", ""), corp["corp_name"],
+                           ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""))
 
     # ────────────────────────────────────────
     # 탭 2 : 재무제표
