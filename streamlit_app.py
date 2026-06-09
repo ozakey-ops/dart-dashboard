@@ -1,5 +1,5 @@
 """
-기업 재무 대시보드 — Streamlit 모바일 웹앱
+다트 재무 대시보드 — Streamlit 모바일 웹앱
 ============================================
 설치:  pip install streamlit plotly requests
 실행:  streamlit run streamlit_app.py
@@ -57,7 +57,7 @@ COLORS = {
 # ─── 페이지 설정 ───
 
 st.set_page_config(
-    page_title="DART 재무 대시보드",
+    page_title="기업 재무 대시보드",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
