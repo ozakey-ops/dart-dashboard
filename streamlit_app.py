@@ -904,11 +904,20 @@ def _krx_get(path, params=None):
     """KRX Open API 공통 호출.
     인증: AUTH_KEY 헤더.
     반환: OutBlock_1 리스트 (없으면 []).
+    4xx/5xx 에러 시 상세 메시지 포함 예외 발생.
     """
     url = f"{_KRX_API_URL}/{path}"
     headers = {"AUTH_KEY": KRX_API_KEY}
     r = requests.get(url, params=params or {}, headers=headers, timeout=15)
-    r.raise_for_status()
+    if not r.ok:
+        try:
+            body = r.text[:300]
+        except Exception:
+            body = ""
+        raise requests.HTTPError(
+            f"{r.status_code} {r.reason} | URL: {r.url} | Body: {body}",
+            response=r
+        )
     j = r.json()
     block = j.get("OutBlock_1", [])
     return block if isinstance(block, list) else []
