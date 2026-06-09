@@ -763,14 +763,40 @@ def fetch_executive_stock_reports(corp_code, count=30, _ver=1):
         return []
 
 
+def _emp_int(v):
+    """숫자 문자열 → int. '-' 단독이면 0."""
+    s = (v or "").strip()
+    if s in ("", "-"):
+        return 0
+    try:
+        return int(s.replace(",", ""))
+    except ValueError:
+        return 0
+
+def _emp_float(v):
+    """숫자 문자열 → float. '-' 단독이면 0.0."""
+    s = (v or "").strip()
+    if s in ("", "-"):
+        return 0.0
+    try:
+        return float(s.replace(",", ""))
+    except ValueError:
+        return 0.0
+
+def _emp_salary(v):
+    """월평균급여 문자열 → int or None."""
+    s = (v or "").strip().replace(",", "")
+    return int(s) if s.isdigit() else None
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_employee_status(corp_code, years, _ver=1):
-    """DART empSttus.json — 연도별 직원 현황.
-    fo_bbm=='성별합계' 행만 추출해 남/여 정규직·계약직·합계를 반환.
-    반환: { year: {"male": int, "female": int, "total": int,
-                   "male_contract": int, "female_contract": int,
-                   "avg_tenure_m": float, "avg_tenure_f": float,
-                   "salary_m": int, "salary_f": int} }
+    """DART empSttus.json — 연도별 직원 현황 (사업보고서 기준).
+    fo_bbm=='성별합계' 행으로 남/여 정규직·계약직·합계·급여를 반환.
+    반환: { year(str): { male, female, total, male_contract, female_contract,
+                         male_total, female_total,
+                         avg_tenure_m, avg_tenure_f,
+                         salary_m, salary_f } }
     """
     if not DART_KEY:
         return {}
@@ -780,43 +806,37 @@ def fetch_employee_status(corp_code, years, _ver=1):
             r = requests.get(
                 f"{BASE}/empSttus.json",
                 params={
-                    "crtfc_key": DART_KEY,
+                    "crtfc_key":  DART_KEY,
                     "corp_code":  corp_code,
                     "bsns_year":  str(year),
                     "reprt_code": "11011",   # 사업보고서
                 },
                 timeout=10,
             )
-            data = r.json()
-            if data.get("status") != "000":
+            raw = r.json()
+            if raw.get("status") != "000":
                 continue
-            items = [x for x in (data.get("list") or []) if x.get("fo_bbm") == "성별합계"]
+            # fo_bbm이 '성별합계'인 행만 (남/여 각 1행)
+            items = [x for x in (raw.get("list") or [])
+                     if (x.get("fo_bbm") or "").strip() in ("성별합계",)]
             rec = {}
             for item in items:
-                def _int(v):
-                    try: return int((v or "0").replace(",", "").replace("-", "0"))
-                    except: return 0
-                def _float(v):
-                    try: return float((v or "0").replace(",", "").replace("-", "0"))
-                    except: return 0.0
-                sex = item.get("sexdstn", "")
+                sex = (item.get("sexdstn") or "").strip()
                 if sex == "남":
-                    rec["male"]          = _int(item.get("rgllbr_co"))
-                    rec["male_contract"] = _int(item.get("cnttk_co"))
-                    rec["male_total"]    = _int(item.get("sm"))
-                    rec["avg_tenure_m"]  = _float(item.get("avrg_cnwk_sdytrn"))
-                    sal = (item.get("jan_salary_am") or "-").replace(",", "").replace("-", "")
-                    rec["salary_m"] = int(sal) if sal.isdigit() else None
+                    rec["male"]          = _emp_int(item.get("rgllbr_co"))
+                    rec["male_contract"] = _emp_int(item.get("cnttk_co"))
+                    rec["male_total"]    = _emp_int(item.get("sm"))
+                    rec["avg_tenure_m"]  = _emp_float(item.get("avrg_cnwk_sdytrn"))
+                    rec["salary_m"]      = _emp_salary(item.get("jan_salary_am"))
                 elif sex == "여":
-                    rec["female"]          = _int(item.get("rgllbr_co"))
-                    rec["female_contract"] = _int(item.get("cnttk_co"))
-                    rec["female_total"]    = _int(item.get("sm"))
-                    rec["avg_tenure_f"]    = _float(item.get("avrg_cnwk_sdytrn"))
-                    sal = (item.get("jan_salary_am") or "-").replace(",", "").replace("-", "")
-                    rec["salary_f"] = int(sal) if sal.isdigit() else None
+                    rec["female"]          = _emp_int(item.get("rgllbr_co"))
+                    rec["female_contract"] = _emp_int(item.get("cnttk_co"))
+                    rec["female_total"]    = _emp_int(item.get("sm"))
+                    rec["avg_tenure_f"]    = _emp_float(item.get("avrg_cnwk_sdytrn"))
+                    rec["salary_f"]        = _emp_salary(item.get("jan_salary_am"))
             if rec:
                 rec["total"] = rec.get("male_total", 0) + rec.get("female_total", 0)
-                result[year] = rec
+                result[str(year)] = rec   # 키를 항상 문자열로 통일
         except Exception:
             continue
     return result
@@ -1687,9 +1707,9 @@ def main():
                     fig_tenure.update_layout(
                         title_text="평균 근속연수 (년)",
                         title_font_color="#1e293b", title_font_size=12,
-                        yaxis=dict(ticksuffix="년", gridcolor="#e2e8f0"),
                         **PLOTLY_LAYOUT,
                     )
+                    fig_tenure.update_yaxes(ticksuffix="년", gridcolor="#e2e8f0")
                     st.plotly_chart(fig_tenure, use_container_width=True)
 
                     # ── 월평균 급여 (데이터 있는 연도만) ──
@@ -1716,9 +1736,9 @@ def main():
                             title_text="월평균 급여 (만원)",
                             title_font_color="#1e293b", title_font_size=12,
                             barmode="group",
-                            yaxis=dict(ticksuffix="만", gridcolor="#e2e8f0"),
                             **PLOTLY_LAYOUT,
                         )
+                        fig_sal.update_yaxes(ticksuffix="만", gridcolor="#e2e8f0")
                         st.plotly_chart(fig_sal, use_container_width=True)
 
                     # ── 데이터 테이블 ──
