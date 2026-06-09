@@ -889,6 +889,58 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         return []
 
 
+# ─── pykrx 시장 데이터 ───
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_market_cap_history(stock_code, _ver=1):
+    """pykrx: 연도별 시가총액 (최근 12년)."""
+    try:
+        from pykrx import stock as krx
+        end   = datetime.now().strftime("%Y%m%d")
+        start = str(datetime.now().year - 12) + "0101"
+        df = krx.get_market_cap(start, end, stock_code, freq="y")
+        if df is None or df.empty:
+            return {}
+        result = {}
+        for dt, row in df.iterrows():
+            year = str(dt)[:4]
+            result[year] = {
+                "mktcap": round(int(row.get("시가총액", 0)) / 1e8),   # 억원
+                "shares": int(row.get("상장주식수", 0)),
+            }
+        return result
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_investor_trading(stock_code, _ver=1):
+    """pykrx: 투자자별 일별 순매수 + 기간 합계 매수/매도/순매수 (최근 1년)."""
+    try:
+        from pykrx import stock as krx
+        from datetime import timedelta
+        end   = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
+        df_daily = krx.get_market_trading_value_by_date(start, end, stock_code)
+        df_total = krx.get_market_trading_value_by_investor(start, end, stock_code)
+        return {"daily": df_daily, "total": df_total}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_valuation_history(stock_code, _ver=1):
+    """pykrx: 월별 PER/PBR/DIV 추이 (최근 5년)."""
+    try:
+        from pykrx import stock as krx
+        end   = datetime.now().strftime("%Y%m%d")
+        start = str(datetime.now().year - 5) + "0101"
+        df = krx.get_market_fundamental(start, end, stock_code, freq="m")
+        return df if (df is not None and not df.empty) else None
+    except Exception:
+        return None
+
+
 def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
     """캔들스틱 + 거래량 차트 (일/월/연봉 선택)."""
     if not stock_code:
@@ -1250,6 +1302,151 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             )
         else:
             st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
+
+        # ────────────────────────────────────
+        # ⑤ 연도별 시가총액 추이
+        # ────────────────────────────────────
+        _section_header("연도별 시가총액 추이")
+        with st.spinner("시가총액 데이터 조회 중..."):
+            cap_data = fetch_market_cap_history(stock_code)
+        if cap_data:
+            cap_years = sorted(cap_data.keys())
+            cap_vals  = [cap_data[y]["mktcap"] for y in cap_years]
+            fig_cap = go.Figure()
+            fig_cap.add_trace(go.Bar(
+                x=cap_years,
+                y=cap_vals,
+                marker_color="#2563eb",
+                text=[f'{v:,.0f}억' for v in cap_vals],
+                textposition="outside",
+                textfont=dict(size=9),
+            ))
+            fig_cap.update_layout(
+                title_text="시가총액 (억원)",
+                title_font_color="#1e293b", title_font_size=12,
+                **PLOTLY_LAYOUT,
+            )
+            fig_cap.update_yaxes(tickformat=",")
+            st.plotly_chart(fig_cap, use_container_width=True)
+        else:
+            st.caption("시가총액 데이터를 불러올 수 없습니다. (pykrx 설치 필요)")
+
+        # ────────────────────────────────────
+        # ⑥ 투자자별 수급
+        # ────────────────────────────────────
+        _section_header("투자자별 수급 (최근 1년)")
+        with st.spinner("수급 데이터 조회 중..."):
+            inv_data = fetch_investor_trading(stock_code)
+        if inv_data:
+            df_daily = inv_data.get("daily")
+            df_total = inv_data.get("total")
+
+            # 누적 순매수 라인 — 개인 / 외국인 / 기관합계
+            if df_daily is not None and not df_daily.empty:
+                key_inv = [c for c in ["기관합계", "개인", "외국인"] if c in df_daily.columns]
+                if key_inv:
+                    clr_inv = {"기관합계": "#8b5cf6", "개인": "#2563eb", "외국인": "#dc2626"}
+                    fig_inv = go.Figure()
+                    for inv in key_inv:
+                        cum = df_daily[inv].cumsum() / 1e8
+                        fig_inv.add_trace(go.Scatter(
+                            name=inv,
+                            x=df_daily.index.astype(str).tolist(),
+                            y=cum.tolist(),
+                            mode="lines",
+                            line=dict(color=clr_inv.get(inv, "#64748b"), width=1.5),
+                        ))
+                    fig_inv.update_layout(
+                        title_text="누적 순매수 (억원)",
+                        title_font_color="#1e293b", title_font_size=12,
+                        **PLOTLY_LAYOUT,
+                    )
+                    fig_inv.update_yaxes(tickformat=",", ticksuffix="억")
+                    st.plotly_chart(fig_inv, use_container_width=True)
+
+            # 기간 합계 — 매수 / 매도 / 순매수 그룹 막대
+            if df_total is not None and not df_total.empty:
+                show_inv = [i for i in ["기관합계", "개인", "외국인"] if i in df_total.index]
+                if show_inv:
+                    col_map = {"매수": "#dc2626", "매도": "#2563eb", "순매수": "#f59e0b"}
+                    fig_tot = go.Figure()
+                    for col, clr in col_map.items():
+                        if col in df_total.columns:
+                            fig_tot.add_trace(go.Bar(
+                                name=col,
+                                x=show_inv,
+                                y=[df_total.loc[i, col] / 1e8 for i in show_inv],
+                                marker_color=clr,
+                            ))
+                    fig_tot.update_layout(
+                        title_text="기간합계 매수·매도·순매수 (억원)",
+                        title_font_color="#1e293b", title_font_size=12,
+                        barmode="group", **PLOTLY_LAYOUT,
+                    )
+                    fig_tot.update_yaxes(tickformat=",", ticksuffix="억")
+                    st.plotly_chart(fig_tot, use_container_width=True)
+        else:
+            st.caption("수급 데이터를 불러올 수 없습니다. (pykrx 설치 필요)")
+
+        # ────────────────────────────────────
+        # ⑦ 밸류에이션 PER / PBR / DIV
+        # ────────────────────────────────────
+        _section_header("밸류에이션 추이 (월별 PER · PBR · DIV)")
+        with st.spinner("밸류에이션 데이터 조회 중..."):
+            val_df = fetch_valuation_history(stock_code)
+        if val_df is not None and not val_df.empty:
+            dates_v = val_df.index.astype(str).tolist()
+
+            # PER / PBR — 이중 Y축
+            fig_pb = make_subplots(specs=[[{"secondary_y": True}]])
+            if "PER" in val_df.columns:
+                fig_pb.add_trace(go.Scatter(
+                    name="PER", x=dates_v, y=val_df["PER"].tolist(),
+                    mode="lines", line=dict(color="#2563eb", width=1.5),
+                ), secondary_y=False)
+            if "PBR" in val_df.columns:
+                fig_pb.add_trace(go.Scatter(
+                    name="PBR", x=dates_v, y=val_df["PBR"].tolist(),
+                    mode="lines", line=dict(color="#dc2626", width=1.5),
+                ), secondary_y=True)
+            fig_pb.update_layout(
+                title_text="PER (좌축) · PBR (우축)",
+                title_font=dict(size=12, color="#1e293b"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(248,250,252,1)",
+                font=dict(color="#64748b", size=11),
+                legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#1e293b", size=11),
+                            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=40, t=50, b=10),
+                height=280,
+                hovermode="x unified",
+            )
+            fig_pb.update_xaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0")
+            fig_pb.update_yaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0", secondary_y=False,
+                                 title_text="PER")
+            fig_pb.update_yaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0", secondary_y=True,
+                                 title_text="PBR")
+            st.plotly_chart(fig_pb, use_container_width=True)
+
+            # DIV 배당수익률
+            if "DIV" in val_df.columns:
+                fig_div = go.Figure()
+                fig_div.add_trace(go.Scatter(
+                    name="배당수익률",
+                    x=dates_v, y=val_df["DIV"].tolist(),
+                    mode="lines",
+                    line=dict(color="#16a34a", width=1.5),
+                    fill="tozeroy", fillcolor="rgba(22,163,74,0.1)",
+                ))
+                fig_div.update_layout(
+                    title_text="배당수익률 DIV (%)",
+                    title_font_color="#1e293b", title_font_size=12,
+                    **PLOTLY_LAYOUT,
+                )
+                fig_div.update_yaxes(ticksuffix="%", gridcolor="#e2e8f0")
+                st.plotly_chart(fig_div, use_container_width=True)
+        else:
+            st.caption("밸류에이션 데이터를 불러올 수 없습니다. (pykrx 설치 필요)")
 
 
 # ─── 차트 ───
