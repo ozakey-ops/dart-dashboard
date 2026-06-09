@@ -1,5 +1,5 @@
 """
-DART 재무 대시보드 — Streamlit 모바일 웹앱
+기업 주식 시황 및 재무 대시보드 — Streamlit 모바일 웹앱
 ============================================
 설치:  pip install streamlit plotly requests
 실행:  streamlit run streamlit_app.py
@@ -57,7 +57,7 @@ COLORS = {
 # ─── 페이지 설정 ───
 
 st.set_page_config(
-    page_title="DART 재무 대시보드",
+    page_title="기업 주식 시황 및 재무 대시보드",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -362,7 +362,7 @@ def _parse_disc_list(items, count):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
-def fetch_disclosures(corp_code, count=5):
+def fetch_disclosures(corp_code, count=15):
     """DART 공시 목록 조회 — 날짜 범위 명시, 공시유형 순서대로 폴백."""
     from datetime import timedelta
     end_de = datetime.now().strftime("%Y%m%d")
@@ -404,7 +404,7 @@ def fetch_disclosures(corp_code, count=5):
 # ─── 뉴스 ───
 
 @st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
-def fetch_news(company_name, count=5):
+def fetch_news(company_name, count=15):
     """Google News RSS로 최신 뉴스 수집."""
     try:
         import urllib.parse
@@ -723,7 +723,7 @@ def main():
                   background:linear-gradient(135deg,#2563eb,#7c3aed);
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
-        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">DART 재무 대시보드</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">기업 주식 시황 및 재무 대시보드</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
