@@ -50,7 +50,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 10
+_CACHE_VER = 11
 
 COLORS = {
     "blue":   "#2563eb",
@@ -896,20 +896,41 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_cap_history(stock_code, _ver=1):
-    """pykrx: 연도별 시가총액 (최근 12년)."""
+    """pykrx: 연도별 시가총액 (최근 12년).
+    freq='y' 미지원 시 일별 조회 후 pandas resample로 폴백.
+    """
     try:
         from pykrx import stock as krx
+        import pandas as pd
         end   = datetime.now().strftime("%Y%m%d")
         start = str(datetime.now().year - 12) + "0101"
-        df = krx.get_market_cap(start, end, stock_code, freq="y")
+
+        # 1차 시도: freq='y'
+        df = None
+        try:
+            df = krx.get_market_cap(start, end, stock_code, freq="y")
+        except Exception:
+            pass
+
+        # 폴백: daily 조회 후 연말 값만 추출
+        if df is None or df.empty:
+            df_daily = krx.get_market_cap(start, end, stock_code)
+            if df_daily is not None and not df_daily.empty:
+                df = df_daily.resample("YE").last()
+
         if df is None or df.empty:
             return {"__error__": "데이터 없음 (비상장 또는 조회 불가 종목)"}
+
+        # 컬럼명 탐색 (pykrx 버전별 한/영 혼용 대응)
+        cap_col   = next((c for c in df.columns if "시가총액" in c or "Mktcap" in c), None)
+        share_col = next((c for c in df.columns if "상장주식수" in c or "Shares" in c), None)
+
         result = {}
         for dt, row in df.iterrows():
             year = str(dt)[:4]
             result[year] = {
-                "mktcap": round(int(row.get("시가총액", 0)) / 1e8),
-                "shares": int(row.get("상장주식수", 0)),
+                "mktcap": round(int(row[cap_col]) / 1e8) if cap_col else 0,
+                "shares": int(row[share_col]) if share_col else 0,
             }
         return result
     except Exception as e:
@@ -918,14 +939,33 @@ def fetch_market_cap_history(stock_code, _ver=1):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_investor_trading(stock_code, _ver=1):
-    """pykrx: 투자자별 일별 순매수 + 기간 합계 매수/매도/순매수 (최근 1년)."""
+    """pykrx: 투자자별 기간합계 매수/매도/순매수 + 일별 순매수 (최근 1년).
+    get_market_trading_value_by_date 실패 시 일별 차트 생략.
+    """
     try:
         from pykrx import stock as krx
         from datetime import timedelta
+        import pandas as pd
         end   = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
-        df_daily = krx.get_market_trading_value_by_date(start, end, stock_code)
-        df_total = krx.get_market_trading_value_by_investor(start, end, stock_code)
+
+        # 기간 합계 (매수/매도/순매수 by 투자자)
+        df_total = None
+        try:
+            df_total = krx.get_market_trading_value_by_investor(start, end, stock_code)
+        except Exception:
+            pass
+
+        # 일별 순매수 (실패해도 기간 합계만 표시)
+        df_daily = None
+        try:
+            df_daily = krx.get_market_trading_value_by_date(start, end, stock_code)
+        except Exception:
+            pass
+
+        if df_total is None and df_daily is None:
+            return {"__error__": "투자자 수급 데이터 조회 실패"}
+
         return {"daily": df_daily, "total": df_total}
     except Exception as e:
         return {"__error__": str(e)}
@@ -933,14 +973,31 @@ def fetch_investor_trading(stock_code, _ver=1):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_valuation_history(stock_code, _ver=1):
-    """pykrx: 월별 PER/PBR/DIV 추이 (최근 5년)."""
+    """pykrx: 월별 PER/PBR/DIV 추이 (최근 5년).
+    freq='m' 미지원 시 일별 조회 후 월말 값으로 폴백.
+    """
     try:
         from pykrx import stock as krx
+        import pandas as pd
         end   = datetime.now().strftime("%Y%m%d")
         start = str(datetime.now().year - 5) + "0101"
-        df = krx.get_market_fundamental(start, end, stock_code, freq="m")
+
+        # 1차 시도: freq='m'
+        df = None
+        try:
+            df = krx.get_market_fundamental(start, end, stock_code, freq="m")
+        except Exception:
+            pass
+
+        # 폴백: daily 조회 후 월말 값만 추출
         if df is None or df.empty:
-            return {"__error__": "데이터 없음"}
+            df_daily = krx.get_market_fundamental(start, end, stock_code)
+            if df_daily is not None and not df_daily.empty:
+                df = df_daily.resample("ME").last()
+
+        if df is None or df.empty:
+            return {"__error__": "데이터 없음 (비상장 또는 조회 불가 종목)"}
+
         return {"df": df}
     except Exception as e:
         return {"__error__": str(e)}
