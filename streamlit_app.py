@@ -28,7 +28,7 @@ except Exception:
 #  공공데이터포털 KRX API Key
 #  발급: https://www.data.go.kr → 한국거래소_주식시세정보 검색 → 활용신청
 # ══════════════════════════════════════════
-KRX_API_KEY = "YOUR_KRX_API_KEY"   # ← 발급받은 serviceKey 입력
+KRX_API_KEY = "9376B2F5D8C845FB8A426A7F5359EB9B48D8A415"   # ← 발급받은 serviceKey 입력
 _GODATA_URL  = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
 # ══════════════════════════════════════════
 
