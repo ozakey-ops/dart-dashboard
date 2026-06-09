@@ -1,5 +1,5 @@
 """
-DART 재무 대시보드 — Streamlit 모바일 웹앱
+기업 재무 대시보드 — Streamlit 모바일 웹앱
 ============================================
 설치:  pip install streamlit plotly requests
 실행:  streamlit run streamlit_app.py
