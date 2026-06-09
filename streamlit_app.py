@@ -266,40 +266,65 @@ def fetch_year(corp_code, year, fs_div):
 
 # ─── 공시 ───
 
+def _parse_disc_list(items, count):
+    """DART list.json 항목 → 공시 카드 데이터로 변환."""
+    result = []
+    for item in items[:count]:
+        rcept_dt = item.get("rcept_dt", "")
+        if len(rcept_dt) == 8:
+            rcept_dt = f"{rcept_dt[:4]}-{rcept_dt[4:6]}-{rcept_dt[6:]}"
+        rcept_no = item.get("rcept_no", "")
+        link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}" if rcept_no else ""
+        corp_cls_map = {"Y": "유가증권", "K": "코스닥", "N": "코넥스", "E": "기타"}
+        corp_cls = corp_cls_map.get(item.get("corp_cls", ""), "")
+        result.append({
+            "report_nm": item.get("report_nm", "").strip(),
+            "flr_nm":    item.get("flr_nm", "").strip(),
+            "rcept_dt":  rcept_dt,
+            "corp_cls":  corp_cls,
+            "link":      link,
+        })
+    return result
+
+
 @st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
 def fetch_disclosures(corp_code, count=5):
-    """DART 공시 목록 최신 5건 조회."""
+    """거래소 공시(pblntf_ty=I) 우선, 없으면 전체 공시에서 최신 5건."""
+    base_params = {
+        "crtfc_key":  DART_KEY,
+        "corp_code":  corp_code,
+        "page_count": max(count * 3, 15),   # 여유 있게 조회
+        "page_no":    1,
+        "sort":       "date",
+        "sort_mth":   "desc",
+    }
+    # 1차: 거래소 공시
     try:
-        r = requests.get(
-            f"{BASE}/list.json",
-            params={
-                "crtfc_key": DART_KEY,
-                "corp_code": corp_code,
-                "page_count": count,
-                "page_no": 1,
-            },
-            timeout=10,
-        )
+        r = requests.get(f"{BASE}/list.json",
+                         params={**base_params, "pblntf_ty": "I"}, timeout=10)
         d = r.json()
-        if d.get("status") != "000" or not d.get("list"):
-            return []
-        result = []
-        for item in d["list"][:count]:
-            rcept_dt = item.get("rcept_dt", "")
-            # YYYYMMDD → YYYY-MM-DD
-            if len(rcept_dt) == 8:
-                rcept_dt = f"{rcept_dt[:4]}-{rcept_dt[4:6]}-{rcept_dt[6:]}"
-            rcept_no = item.get("rcept_no", "")
-            link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}" if rcept_no else ""
-            result.append({
-                "report_nm": item.get("report_nm", "").strip(),
-                "flr_nm":    item.get("flr_nm", "").strip(),
-                "rcept_dt":  rcept_dt,
-                "link":      link,
-            })
-        return result
+        if d.get("status") == "000" and d.get("list"):
+            return _parse_disc_list(d["list"], count), "거래소공시"
     except Exception:
-        return []
+        pass
+    # 2차: 정기공시 (사업보고서·분기보고서 등)
+    try:
+        r = requests.get(f"{BASE}/list.json",
+                         params={**base_params, "pblntf_ty": "A"}, timeout=10)
+        d = r.json()
+        if d.get("status") == "000" and d.get("list"):
+            return _parse_disc_list(d["list"], count), "정기공시"
+    except Exception:
+        pass
+    # 3차: 전체 공시 (필터 없음)
+    try:
+        r = requests.get(f"{BASE}/list.json", params=base_params, timeout=10)
+        d = r.json()
+        if d.get("status") == "000" and d.get("list"):
+            return _parse_disc_list(d["list"], count), "전체공시"
+        return [], d.get("message", "조회 결과 없음")
+    except Exception as e:
+        return [], str(e)
 
 
 # ─── 뉴스 ───
@@ -657,27 +682,33 @@ def main():
 
     # ── 최신 공시 ──
     st.divider()
-    st.markdown("#### 📋 최근 공시 (DART)")
     with st.spinner("공시 목록 조회 중..."):
-        disc_list = fetch_disclosures(corp["corp_code"])
+        disc_list, disc_label = fetch_disclosures(corp["corp_code"])
+
+    st.markdown(f"#### 📋 최근 공시 · <span style='font-size:.8rem;color:#64748b;font-weight:400;'>{disc_label}</span>",
+                unsafe_allow_html=True)
 
     if not disc_list:
-        st.info("공시 정보를 불러올 수 없습니다.")
+        st.info(f"공시 정보를 불러올 수 없습니다. ({disc_label})")
     else:
-        for d in disc_list:
-            link_html = f'href="{d["link"]}" target="_blank"' if d["link"] else ""
+        for item in disc_list:
+            link_attr = f'href="{item["link"]}" target="_blank"' if item["link"] else ""
+            cls_badge = (f'<span style="font-size:.68rem;background:#eff6ff;color:#2563eb;'
+                         f'border-radius:4px;padding:1px 6px;margin-right:6px;">'
+                         f'{item["corp_cls"]}</span>') if item["corp_cls"] else ""
             st.markdown(f"""
-            <a {link_html} style="text-decoration:none;">
+            <a {link_attr} style="text-decoration:none;">
               <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
                           padding:11px 16px;margin-bottom:7px;
                           box-shadow:0 1px 3px rgba(0,0,0,.05);
                           display:flex;align-items:center;gap:12px;">
                 <div style="width:6px;height:6px;border-radius:50%;background:#2563eb;flex-shrink:0;margin-top:2px;"></div>
                 <div style="flex:1;">
-                  <div style="font-size:.88rem;font-weight:600;color:#1e293b;line-height:1.4;">{d['report_nm']}</div>
-                  <div style="display:flex;gap:10px;margin-top:4px;">
-                    <span style="font-size:.72rem;color:#64748b;">{d['flr_nm']}</span>
-                    <span style="font-size:.72rem;color:#94a3b8;">{d['rcept_dt']}</span>
+                  <div style="font-size:.88rem;font-weight:600;color:#1e293b;line-height:1.4;">{item['report_nm']}</div>
+                  <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
+                    {cls_badge}
+                    <span style="font-size:.72rem;color:#64748b;">{item['flr_nm']}</span>
+                    <span style="font-size:.72rem;color:#94a3b8;">{item['rcept_dt']}</span>
                   </div>
                 </div>
                 <div style="font-size:.75rem;color:#2563eb;flex-shrink:0;">→</div>
