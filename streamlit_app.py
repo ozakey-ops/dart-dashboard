@@ -44,7 +44,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 8
+_CACHE_VER = 9
 
 COLORS = {
     "blue":   "#2563eb",
@@ -294,36 +294,67 @@ def fetch_company_overview(corp_code, stock_code):
     except Exception:
         pass
 
-    # 2. FnGuide Business Summary
+    # 2. FnGuide Business Summary — Session + EUC-KR 방식
     result["summary"] = ""
     if stock_code:
         try:
-            url = (f"https://comp.fnguide.com/svo/ASPSYSTEM/ASP_Company.asp"
-                   f"?pGB=KB&gicode=A{stock_code}")
-            headers = {
-                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                               "Chrome/124.0.0.0 Safari/537.36"),
-                "Accept-Language": "ko-KR,ko;q=0.9",
+            import re as _re2, html as _html_mod
+            UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0.0.0 Safari/537.36")
+            hdrs = {
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
                 "Referer": "https://comp.fnguide.com/",
             }
-            r = requests.get(url, headers=headers, timeout=12)
-            r.encoding = "utf-8"
-            html = r.text
-            # Business Summary 텍스트 추출 — 여러 패턴 시도
+            sess = requests.Session()
+            # 쿠키 먼저 수집
+            try:
+                sess.get("https://comp.fnguide.com/", headers=hdrs, timeout=6)
+            except Exception:
+                pass
+
+            url = (f"https://comp.fnguide.com/svo/ASPSYSTEM/ASP_Company.asp"
+                   f"?pGB=KB&gicode=A{stock_code}")
+            resp = sess.get(url, headers=hdrs, timeout=14)
+
+            # 인코딩 자동 탐지 (EUC-KR 우선)
+            raw_bytes = resp.content
+            html_text = ""
+            for enc in ["euc-kr", "cp949", "utf-8"]:
+                try:
+                    decoded = raw_bytes.decode(enc)
+                    if "동사" in decoded or "당사" in decoded or "사업" in decoded:
+                        html_text = decoded
+                        break
+                except Exception:
+                    continue
+            if not html_text:
+                html_text = resp.text
+
+            # 추출 패턴 — FnGuide 실제 구조 기반
+            # td.td_table_a1 이 Business Summary 본문 셀
             patterns = [
-                r'Business\s*Summary[\s\S]{0,200}?<td[^>]*>([\s\S]{100,2000}?)</td>',
-                r'bizSummary[^>]*>([\s\S]{100,2000}?)</(?:td|div)>',
-                r'<div[^>]+id=["\']bizSummary["\'][^>]*>([\s\S]{50,2000}?)</div>',
-                r'작성일[^<]*</[^>]+>[\s\S]{0,300}?<td[^>]*>([\s\S]{100,2000}?)</td>',
+                # 1) 실제 클래스 직접 매칭 (가장 정확)
+                r'<td[^>]+class=["\']td_table_a1["\'][^>]*>([\s\S]{80,3000}?)</td>',
+                # 2) Business Summary 헤더 이후 첫 번째 긴 TD
+                r'Business\s*Summary[\s\S]{0,600}?<td[^>]*>([\s\S]{80,3000}?)</td>',
+                # 3) "동사는|당사는|회사는" 으로 시작하는 TD
+                r'<td[^>]*>\s*((?:동사|당사|회사)는[\s\S]{80,2500}?)</td>',
+                # 4) 작성일 바로 앞 TD
+                r'<td[^>]*>([\s\S]{80,3000}?)</td>\s*</tr>\s*<tr[^>]*>\s*<td[^>]*>\s*작성일',
             ]
             for pat in patterns:
-                m = _re.search(pat, html, _re.IGNORECASE)
+                m = _re2.search(pat, html_text, _re2.IGNORECASE)
                 if m:
-                    text = _re.sub(r'<[^>]+>', ' ', m.group(1))
-                    text = _re.sub(r'\s+', ' ', text).strip()
+                    text = _re2.sub(r'<[^>]+>', ' ', m.group(1))
+                    text = _html_mod.unescape(text)
+                    text = _re2.sub(r'\s+', ' ', text).strip()
                     if len(text) > 80:
-                        result["summary"] = text[:800]
+                        result["summary"] = text[:900]
                         break
         except Exception:
             pass
@@ -749,116 +780,59 @@ def main():
     with tab_is:
         c1, c2 = st.columns(2)
         with c1:
-            fig = make_mixed(years,
-                             {"매출액": [data[y]["is"].get("revenue")   for y in years]},
-                             {"영업이익": [data[y]["is"].get("opIncome")  for y in years],
-                              "순이익":   [data[y]["is"].get("netIncome") for y in years]},
-                             "매출 · 영업이익 · 순이익 (억원)")
+            fig = make_bar(years,
+                           {"매출액":   [data[y]["is"].get("revenue")   for y in years],
+                            "영업이익": [data[y]["is"].get("opIncome")  for y in years],
+                            "순이익":   [data[y]["is"].get("netIncome") for y in years]},
+                           "매출 · 영업이익 · 순이익 (억원)")
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             fig = make_line(years,
                             {"영업이익률(%)": [pct(data[y]["is"].get("opIncome"),  data[y]["is"].get("revenue")) for y in years],
                              "순이익률(%)":   [pct(data[y]["is"].get("netIncome"), data[y]["is"].get("revenue")) for y in years]},
-                            "수익성 비율", is_pct=True)
+                            "이익률 추이", is_pct=True)
             st.plotly_chart(fig, use_container_width=True)
 
         rows = []
         for y in reversed(years):
-            i = data[y]["is"]
-            om = pct(i.get("opIncome"),  i.get("revenue"))
-            nm = pct(i.get("netIncome"), i.get("revenue"))
-            rows.append({"연도": y, "매출액": fmt(i.get("revenue")),
-                         "영업이익": fmt(i.get("opIncome")), "순이익": fmt(i.get("netIncome")),
-                         "영업이익률": f"{om:.1f}%" if om else "-",
-                         "순이익률": f"{nm:.1f}%" if nm else "-"})
+            s = data[y]["is"]
+            opm = pct(s.get("opIncome"),  s.get("revenue"))
+            npm = pct(s.get("netIncome"), s.get("revenue"))
+            rows.append({"연도": y, "매출액": fmt(s.get("revenue")),
+                         "영업이익": fmt(s.get("opIncome")),
+                         "순이익":   fmt(s.get("netIncome")),
+                         "영업이익률": f"{opm:.1f}%" if opm else "-",
+                         "순이익률":   f"{npm:.1f}%" if npm else "-"})
         st.dataframe(rows, hide_index=True, use_container_width=True)
 
     # 현금흐름표
     with tab_cf:
-        cf1, cf2 = st.columns(2)
-        with cf1:
+        c1, c2 = st.columns(2)
+        with c1:
             fig = make_bar(years,
-                           {"영업활동": [data[y]["cf"].get("opCF")  for y in years],
-                            "투자활동": [data[y]["cf"].get("invCF") for y in years],
-                            "재무활동": [data[y]["cf"].get("finCF") for y in years]},
-                           "현금흐름 추이 (억원)")
+                           {"영업CF":  [data[y]["cf"].get("opCF")   for y in years],
+                            "투자CF":  [data[y]["cf"].get("invCF")  for y in years],
+                            "재무CF":  [data[y]["cf"].get("finCF")  for y in years]},
+                           "현금흐름 (억원)")
             st.plotly_chart(fig, use_container_width=True)
-        with cf2:
-            ec_data = {"기말현금및현금성자산": [data[y]["cf"].get("endCash") for y in years]}
-            fig_ec = make_line(years, ec_data, "기말현금및현금성자산 추이 (억원)")
-            st.plotly_chart(fig_ec, use_container_width=True)
+        with c2:
+            fig = make_line(years,
+                            {"기말현금": [data[y]["cf"].get("endCash") for y in years]},
+                            "기말현금 추이 (억원)")
+            st.plotly_chart(fig, use_container_width=True)
 
         rows = []
         for y in reversed(years):
             c = data[y]["cf"]
-            rows.append({"연도": y, "영업활동": fmt(c.get("opCF")),
-                         "투자활동": fmt(c.get("invCF")), "재무활동": fmt(c.get("finCF")),
+            rows.append({"연도": y,
+                         "영업CF":  fmt(c.get("opCF")),
+                         "투자CF":  fmt(c.get("invCF")),
+                         "재무CF":  fmt(c.get("finCF")),
                          "기말현금": fmt(c.get("endCash"))})
         st.dataframe(rows, hide_index=True, use_container_width=True)
 
-    # ── 최신 공시 ──
-    st.divider()
-    with st.spinner("공시 목록 조회 중..."):
-        disc_list, disc_label = fetch_disclosures(corp["corp_code"])
-
-    st.markdown(f"#### 📋 최근 공시 · <span style='font-size:.8rem;color:#64748b;font-weight:400;'>{disc_label}</span>",
-                unsafe_allow_html=True)
-
-    if not disc_list:
-        st.info(f"공시 정보를 불러올 수 없습니다. ({disc_label})")
-    else:
-        for item in disc_list:
-            link_attr = f'href="{item["link"]}" target="_blank"' if item["link"] else ""
-            cls_badge = (f'<span style="font-size:.68rem;background:#eff6ff;color:#2563eb;'
-                         f'border-radius:4px;padding:1px 6px;margin-right:6px;">'
-                         f'{item["corp_cls"]}</span>') if item["corp_cls"] else ""
-            st.markdown(f"""
-            <a {link_attr} style="text-decoration:none;">
-              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
-                          padding:11px 16px;margin-bottom:7px;
-                          box-shadow:0 1px 3px rgba(0,0,0,.05);
-                          display:flex;align-items:center;gap:12px;">
-                <div style="width:6px;height:6px;border-radius:50%;background:#2563eb;flex-shrink:0;margin-top:2px;"></div>
-                <div style="flex:1;">
-                  <div style="font-size:.88rem;font-weight:600;color:#1e293b;line-height:1.4;">{item['report_nm']}</div>
-                  <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
-                    {cls_badge}
-                    <span style="font-size:.72rem;color:#64748b;">{item['flr_nm']}</span>
-                    <span style="font-size:.72rem;color:#94a3b8;">{item['rcept_dt']}</span>
-                  </div>
-                </div>
-                <div style="font-size:.75rem;color:#2563eb;flex-shrink:0;">→</div>
-              </div>
-            </a>
-            """, unsafe_allow_html=True)
-
-    # ── 최신 뉴스 ──
-    st.divider()
-    st.markdown("#### 📰 최신 뉴스")
-    with st.spinner("뉴스 검색 중..."):
-        news_list = fetch_news(corp["corp_name"])
-
-    if not news_list:
-        st.info("뉴스를 불러올 수 없습니다.")
-    else:
-        for n in news_list:
-            st.markdown(f"""
-            <a href="{n['link']}" target="_blank" style="text-decoration:none;">
-              <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
-                          padding:12px 16px;margin-bottom:8px;
-                          box-shadow:0 1px 3px rgba(0,0,0,.05);">
-                <div style="font-size:.88rem;font-weight:600;color:#1e293b;
-                            line-height:1.4;margin-bottom:5px;">{n['title']}</div>
-                               <div style="display:flex;gap:10px;align-items:center;">
-                  <span style="font-size:.72rem;color:#2563eb;font-weight:500;">{n['source']}</span>
-                  <span style="font-size:.7rem;color:#94a3b8;">{n['date']}</span>
-                </div>
-              </div>
-            </a>
-            """, unsafe_allow_html=True)
-
-    st.caption(f"데이터: 금융감독원 전자공시(DART) · 뉴스: Google News · 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-
+# ══════════════════════════════════════════
+#  메인
+# ══════════════════════════════════════════
 if __name__ == "__main__":
     main()
