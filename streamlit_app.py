@@ -517,25 +517,28 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     """캔들스틱 + 거래량 차트 (일/월/연봉 선택)."""
     if not stock_code:
         return
-    # 기간 선택 + 이동평균선 입력 (한 줄)
-    col_period, col_ma = st.columns([5, 1])
+    # 기간 선택 + 이평선 입력 (한 줄)
+    col_period, col_ma1, col_ma2 = st.columns([5, 1, 1])
     with col_period:
-        period_labels = ["6달", "24달", "36달", "월봉", "연봉"]
+        period_labels = ["6달", "2년", "3년", "월봉", "연봉"]
         sel = st.radio("기간", period_labels, horizontal=True,
                        key=f"sp_{stock_code}", label_visibility="collapsed")
-    with col_ma:
-        ma_period = int(st.number_input("이동평균선", min_value=0, max_value=300,
-                                        value=20, key=f"ma_{stock_code}"))
-    tf_map = {"6달": "6mo", "24달": "24mo", "36달": "36mo", "월봉": "month", "연봉": "year"}
+    with col_ma1:
+        ma_period1 = int(st.number_input("이평선1", min_value=0, max_value=300,
+                                         value=20, key=f"ma1_{stock_code}"))
+    with col_ma2:
+        ma_period2 = int(st.number_input("이평선2", min_value=0, max_value=300,
+                                         value=60, key=f"ma2_{stock_code}"))
+    tf_map = {"6달": "6mo", "2년": "24mo", "3년": "36mo", "월봉": "month", "연봉": "year"}
     hint = "  ·  두 번 탭  자동 스케일"
     title_map = {
-        "6달":  f"{corp_name}  일봉 (최근 6개월){hint}",
-        "24달": f"{corp_name}  일봉 (최근 24개월){hint}",
-        "36달": f"{corp_name}  일봉 (최근 36개월){hint}",
-        "월봉":  f"{corp_name}  월봉 (최근 10년){hint}",
-        "연봉":  f"{corp_name}  연봉 (최근 20년){hint}",
+        "6달": f"{corp_name}  일봉 (최근 6개월){hint}",
+        "2년": f"{corp_name}  일봉 (최근 2년){hint}",
+        "3년": f"{corp_name}  일봉 (최근 3년){hint}",
+        "월봉": f"{corp_name}  월봉 (최근 10년){hint}",
+        "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
     }
-    is_daily = sel in ("6달", "24달", "36달")
+    is_daily = sel in ("6달", "2년", "3년")
 
     with st.spinner("주가 데이터 조회 중..."):
         chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=6)
@@ -551,7 +554,8 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     # 상승=빨강 / 하락=파랑 (한국식)
     vol_colors = ["#dc2626" if c >= o else "#2563eb"
                   for c, o in zip(closes, opens_)]
-    show_ma = is_daily and ma_period > 0 and len(closes) >= ma_period
+    ma_cfg = [(ma_period1, "#f59e0b"), (ma_period2, "#8b5cf6")]
+    show_ma = is_daily and any(p > 0 and len(closes) >= p for p, _ in ma_cfg)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         vertical_spacing=0.04, row_heights=[0.72, 0.28])
     fig.add_trace(go.Candlestick(
@@ -561,17 +565,19 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         decreasing_line_color="#2563eb", decreasing_fillcolor="#2563eb",
         line_width=1,
     ), row=1, col=1)
-    # 이동평균선 (일봉 + period > 0 일 때만)
-    if show_ma:
-        ma_vals = [None] * (ma_period - 1) + [
-            round(sum(closes[j - ma_period:j]) / ma_period, 0)
-            for j in range(ma_period, len(closes) + 1)
-        ]
-        fig.add_trace(go.Scatter(
-            x=dates, y=ma_vals, mode="lines",
-            name=f"MA{ma_period}",
-            line=dict(color="#f59e0b", width=1.4),
-        ), row=1, col=1)
+    # 이평선 (일봉 + period > 0 일 때만)
+    if is_daily:
+        for ma_p, ma_color in ma_cfg:
+            if ma_p > 0 and len(closes) >= ma_p:
+                ma_vals = [None] * (ma_p - 1) + [
+                    round(sum(closes[j - ma_p:j]) / ma_p, 0)
+                    for j in range(ma_p, len(closes) + 1)
+                ]
+                fig.add_trace(go.Scatter(
+                    x=dates, y=ma_vals, mode="lines",
+                    name=f"이평선{ma_p}",
+                    line=dict(color=ma_color, width=1.4),
+                ), row=1, col=1)
     fig.add_trace(go.Bar(
         x=dates, y=volumes, name="거래량",
         marker_color=vol_colors, opacity=0.75,
