@@ -854,13 +854,13 @@ def main():
             f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
             f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 8px;margin:0 0 12px 0;">'
             f'<div style="display:flex;align-items:center;">'
-            + fx_item("USD / KRW",    md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
+            + fx_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
             + divider
-            + fx_item("100JPY / KRW", md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
+            + fx_item("원 / 100엔",     md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
             + divider
-            + fx_item("USD / JPY",    md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
+            + fx_item("엔 / 달러",      md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
             + divider
-            + fx_item("10-Yr Bond",   md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
+            + fx_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
             + f'</div>'
             f'<div style="text-align:right;font-size:.65rem;color:#94a3b8;padding:0 10px 5px;">'
             f'기준일 {md["date"]}</div>'
