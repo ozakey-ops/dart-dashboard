@@ -540,15 +540,20 @@ def fetch_major_shareholders(corp_code, _ver=3):
     except Exception:
         pass
 
-    # 폴백: 최근 4년 × 사업/반기보고서
+    # ── candidate_pairs 재정렬: 사업보고서(11011) 우선 ──
+    # list.json에서 가져온 연도 중 사업보고서만 먼저, 나머지 후순위
+    annual_pairs   = [(y, rc) for y, rc in candidate_pairs if rc == "11011"]
+    other_pairs    = [(y, rc) for y, rc in candidate_pairs if rc != "11011"]
+    # 폴백: 최근 5년 사업보고서
     cur_year = datetime.now().year
-    for y in range(cur_year - 1, cur_year - 5, -1):
-        for rc in ["11011", "11012"]:
-            if (y, rc) not in candidate_pairs:
-                candidate_pairs.append((y, rc))
+    for y in range(cur_year - 1, cur_year - 6, -1):
+        if (y, "11011") not in annual_pairs:
+            annual_pairs.append((y, "11011"))
+    candidate_pairs = annual_pairs + other_pairs
 
     # ── Step2: majorstock.json 호출 ──
     last_status = ""
+    debug_raw   = None   # 최초 status==000 응답 raw 저장 (디버그용)
     for bsns_year, reprt_code in candidate_pairs:
         try:
             r = requests.get(
@@ -566,15 +571,39 @@ def fetch_major_shareholders(corp_code, _ver=3):
             last_status = f"{bsns_year}/{reprt_code}: {status} {data.get('message','')}"
             if status != "000":
                 continue
+
             items = data.get("list") or []
+            if not items:
+                continue
+
+            # 첫 성공 응답의 raw 저장 (fields 확인용)
+            if debug_raw is None:
+                debug_raw = items[0]
+
             rows = []
             for item in items:
-                name        = (item.get("nm") or "").strip()
+                # 주주명: nm → 없으면 shinm(별칭 필드) → 없으면 스킵
+                name = (item.get("nm") or item.get("shinm") or "").strip()
                 relation    = (item.get("relate") or "").strip()
-                shares_s    = (item.get("trmend_posesn_stock_co") or "").replace(",", "").strip()
-                ratio_pct_s = (item.get("trmend_posesn_stock_qota_rt") or "").replace(",", "").strip()
                 stock_knd   = (item.get("stock_knd") or "").strip()
                 rm          = (item.get("rm") or "").strip()
+
+                # 기말 보유주식수 — 여러 필드명 시도
+                shares_s = (
+                    item.get("trmend_posesn_stock_co")
+                    or item.get("posesn_stock_co")
+                    or item.get("hold_stock_co")
+                    or ""
+                ).replace(",", "").strip()
+
+                # 기말 지분율 — 여러 필드명 시도
+                ratio_pct_s = (
+                    item.get("trmend_posesn_stock_qota_rt")
+                    or item.get("posesn_stock_qota_rt")
+                    or item.get("hold_ratio")
+                    or ""
+                ).replace(",", "").strip()
+
                 try:
                     shares = int(shares_s) if shares_s else 0
                 except ValueError:
@@ -583,27 +612,33 @@ def fetch_major_shareholders(corp_code, _ver=3):
                     ratio_pct = float(ratio_pct_s) if ratio_pct_s else None
                 except ValueError:
                     ratio_pct = None
-                # nm이 없어도 기록 (법인 주주는 nm 대신 corp_name 사용하는 경우 있음)
+
+                # 이름이 없으면 해당 row 건너뜀
                 if not name:
-                    name = (item.get("corp_name") or "").strip()
-                if name:
-                    rows.append({
-                        "name": name,
-                        "relation": relation,
-                        "shares": shares,
-                        "ratio": ratio_pct,
-                        "stock_knd": stock_knd,
-                        "rm": rm,
-                        "year": bsns_year,
-                        "rcode": reprt_code,
-                    })
+                    continue
+
+                # 주주명이 회사명과 동일하면 의미 없는 row → 건너뜀
+                rows.append({
+                    "name": name,
+                    "relation": relation,
+                    "shares": shares,
+                    "ratio": ratio_pct,
+                    "stock_knd": stock_knd,
+                    "rm": rm,
+                    "year": bsns_year,
+                    "rcode": reprt_code,
+                    "_raw_keys": list(item.keys()),   # 디버그용
+                })
+
             if rows:
                 return rows
+            # rows가 비었어도 debug_raw는 저장됐으므로 계속 탐색
         except Exception as e:
             last_status = str(e)
             continue
 
-    return {"error": last_status or "데이터 없음"}
+    # 모든 시도 실패 → 오류 정보 + 마지막 raw 반환
+    return {"error": last_status or "데이터 없음", "debug_raw": debug_raw}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -863,6 +898,12 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             ref_label = f"{ref['year']}년 {rcode_label.get(ref['rcode'], ref['rcode'])}"
             _section_header("최대주주 현황", ref_label)
 
+            # 디버그 expander — 필드 확인 후 삭제
+            with st.expander("🔍 API 원본 필드 확인 (확인 후 삭제 예정)", expanded=False):
+                st.json({k: v for k, v in ref.items() if k != "_raw_keys"})
+                if ref.get("_raw_keys"):
+                    st.caption(f"실제 키 목록: {ref['_raw_keys']}")
+
             rows_html = ""
             for i, sh in enumerate(shareholders):
                 bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
@@ -903,6 +944,14 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                 st.caption(f"최대주주 데이터를 불러올 수 없습니다. (응답: {sh_error})")
             else:
                 st.caption("최대주주 데이터가 없습니다.")
+            # 디버그: raw 필드 확인용 expander
+            raw_item = (isinstance(shareholders, dict) and shareholders.get("debug_raw")) or \
+                       (shareholders and isinstance(shareholders[0], dict) and shareholders[0].get("_raw_keys") and shareholders[0])
+            if not raw_item and isinstance(shareholders, dict):
+                raw_item = shareholders.get("debug_raw")
+            if raw_item:
+                with st.expander("🔍 API 원본 필드 확인 (디버그)"):
+                    st.json(raw_item)
 
         # ② 지분변동 공시 목록
         with st.spinner("지분공시 조회 중..."):
