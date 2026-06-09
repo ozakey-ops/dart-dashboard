@@ -28,8 +28,8 @@ except Exception:
 #  KRX 인증 (pykrx 1.2.x 이상)
 #  data.krx.co.kr 회원가입 후 발급된 ID/PW 입력
 # ══════════════════════════════════════════
-os.environ["KRX_ID"] = "YOUR_KRX_ID"
-os.environ["KRX_PW"] = "YOUR_KRX_PW"
+os.environ["KRX_ID"] = "ozakey"
+os.environ["KRX_PW"] = "ozakey8662!"
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
