@@ -303,8 +303,9 @@ def fetch_exchange_rates():
     """Frankfurter API로 환율 + 전일 대비 변화 조회."""
     try:
         from datetime import timedelta
-        # 최신 환율
+        # 최신 환율 (latest = 가장 최근 거래일 기준)
         r = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW,JPY", timeout=8)
+        r.raise_for_status()
         d = r.json()
         krw = d["rates"]["KRW"]
         jpy = d["rates"]["JPY"]
@@ -578,10 +579,8 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
                     f'<span style="font-size:.65rem;color:#94a3b8;">{lbl} </span>'
                     f'<span style="font-size:.82rem;font-weight:600;color:{color};">{val}</span>'
                     f'</span>')
-        st.markdown(
-            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
-            f'padding:6px 12px;margin-bottom:6px;overflow-x:auto;white-space:nowrap;">'
-            + ic("시가",   f"{last['open']:,.0f}")
+        info_cells = (
+              ic("시가",   f"{last['open']:,.0f}")
             + ic("고가",   f"{last['high']:,.0f}", "#dc2626")
             + ic("저가",   f"{last['low']:,.0f}",  "#2563eb")
             + ic("종가",   f"{last['close']:,.0f}")
@@ -589,8 +588,14 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
             + ic("등락률", f"{sym}{abs(chg_pct):.2f}%", clr)
             + ic("거래량", f"{last['volume']:,.0f}")
             + ic("거래대금", f"{turnover_eok:,.0f}억")
-            + f'<span style="float:right;font-size:.65rem;color:#94a3b8;">{last["date"]}</span>'
-            + f'</div>',
+        )
+        st.markdown(
+            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+            f'padding:6px 12px;margin-bottom:6px;display:flex;align-items:center;'
+            f'justify-content:space-between;overflow-x:auto;">'
+            f'<div style="white-space:nowrap;">{info_cells}</div>'
+            f'<div style="font-size:.65rem;color:#94a3b8;white-space:nowrap;margin-left:12px;">{last["date"]}</div>'
+            f'</div>',
             unsafe_allow_html=True
         )
 
@@ -889,7 +894,7 @@ def main():
             f'{fx_item("엔 / 달러",  fx["jpy_usd"],    fx.get("jpy_usd_chg"), "엔")}'
             f'{tn_html}'
             f'</div>'
-            f'<div style="text-align:right;font-size:.62rem;color:#cbd5e1;padding:0 8px 4px;">'
+            f'<div style="text-align:right;font-size:.65rem;color:#94a3b8;padding:0 10px 5px;">'
             f'기준일 {fx["date"]}</div>'
             f'</div>',
             unsafe_allow_html=True
