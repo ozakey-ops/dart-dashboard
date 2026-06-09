@@ -25,11 +25,12 @@ except Exception:
     DART_KEY = os.environ.get("DART_KEY", "")
 
 # ══════════════════════════════════════════
-#  공공데이터포털 KRX API Key
-#  발급: https://www.data.go.kr → 한국거래소_주식시세정보 검색 → 활용신청
+#  KRX Open API Key (openapi.krx.co.kr)
+#  발급: https://openapi.krx.co.kr → 회원가입 → API Key 발급
+#  요청 헤더에 AUTH_KEY 로 전달
 # ══════════════════════════════════════════
-KRX_API_KEY = "9376B2F5D8C845FB8A426A7F5359EB9B48D8A415"   # ← 발급받은 serviceKey 입력
-_GODATA_URL  = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
+KRX_API_KEY  = "9376B2F5D8C845FB8A426A7F5359EB9B48D8A415"  # AUTH_KEY
+_KRX_API_URL = "https://openapi.krx.co.kr/svc/apis"
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
@@ -55,7 +56,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 16
+_CACHE_VER = 17
 
 COLORS = {
     "blue":   "#2563eb",
@@ -897,35 +898,34 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         return []
 
 
-# ─── 공공데이터포털 KRX API ───
+# ─── KRX Open API (openapi.krx.co.kr) ───
 
-def _godata_get(endpoint, params):
-    """공공데이터포털 KRX API 공통 호출. items 리스트 반환.
-    ※ data.go.kr 에서 복사한 키가 인코딩 키(%2B 등 포함)라면
-      디코딩 키(+, / 포함된 원본)로 교체해야 합니다.
+def _krx_get(path, params=None):
+    """KRX Open API 공통 호출.
+    인증: AUTH_KEY 헤더.
+    반환: OutBlock_1 리스트 (없으면 []).
     """
-    import urllib.parse
-    url = f"{_GODATA_URL}/{endpoint}"
-    # serviceKey는 params 에 넣으면 이중 인코딩 → URL에 직접 붙임
-    query = urllib.parse.urlencode(
-        {"resultType": "json", "numOfRows": "100", "pageNo": "1", **params}
-    )
-    full_url = f"{url}?serviceKey={KRX_API_KEY}&{query}"
-    r = requests.get(full_url, timeout=15)
+    url = f"{_KRX_API_URL}/{path}"
+    headers = {"AUTH_KEY": KRX_API_KEY}
+    r = requests.get(url, params=params or {}, headers=headers, timeout=15)
     r.raise_for_status()
     j = r.json()
-    try:
-        item = j["response"]["body"]["items"]["item"]
-        return item if isinstance(item, list) else [item]
-    except Exception:
-        return []
+    block = j.get("OutBlock_1", [])
+    return block if isinstance(block, list) else []
+
+
+def _krx_find_stock(rows, stock_code):
+    """OutBlock_1 결과에서 단축코드(ISU_SRT_CD)로 종목 필터링."""
+    for row in rows:
+        if str(row.get("ISU_SRT_CD", "")).strip() == str(stock_code).strip():
+            return row
+    return None
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_cap_history(stock_code, corp_cls="Y", _ver=1):
-    """공공데이터포털 KRX API: 연도별 시가총액 (최근 10년).
-    getStockPriceInfo — mrktTotAmt(시가총액) 필드 사용.
-    연말 거래일 기준으로 연도별 집계.
+    """KRX Open API stk_bydd_trd: 연도별 시가총액 (최근 10년).
+    MKTCAP 필드 사용. 연말 영업일 기준 연도별 집계.
     """
     try:
         from datetime import date, timedelta
@@ -934,41 +934,39 @@ def fetch_market_cap_history(stock_code, corp_cls="Y", _ver=1):
         result   = {}
 
         for year in range(cur_year - 9, cur_year + 1):
-            # 연말 영업일 후보 (12/31 → 12/27까지 역순 탐색)
             for delta in range(6):
                 if year < cur_year:
                     d = date(year, 12, 31) - timedelta(days=delta)
                 else:
                     d = datetime.now().date() - timedelta(days=delta + 1)
-                items = _godata_get("getStockPriceInfo", {
-                    "basDt":     d.strftime("%Y%m%d"),
-                    "likeSrtnCd": stock_code,
-                })
-                if items:
-                    row = items[0]
-                    cap_raw = str(row.get("mrktTotAmt", "0")).replace(",", "")
-                    result[str(year)] = {
-                        "mktcap": round(int(cap_raw) / 1e8) if cap_raw.isdigit() else 0
-                    }
+                rows = _krx_get("sto/stk_bydd_trd", {"basDd": d.strftime("%Y%m%d")})
+                row  = _krx_find_stock(rows, stock_code)
+                if row:
+                    cap_raw = str(row.get("MKTCAP", "0")).replace(",", "").strip()
+                    try:
+                        mktcap = round(int(cap_raw) / 1e8)
+                    except Exception:
+                        mktcap = 0
+                    result[str(year)] = {"mktcap": mktcap}
                     break
 
         if not result:
-            return {"__error__": f"시가총액 데이터 없음 (코드 {stock_code}) — API 키 확인 필요"}
+            return {"__error__": f"시가총액 데이터 없음 (코드 {stock_code})"}
         return result
     except Exception as e:
         return {"__error__": str(e)}
 
 
 def fetch_investor_trading(stock_code, _ver=1):
-    """투자자별 수급 — 공공데이터포털 미지원 엔드포인트."""
-    return {"__error__": "공공데이터포털 미지원 (투자자별 거래실적 API 없음)"}
+    """투자자별 수급 — KRX Open API 미지원."""
+    return {"__error__": "KRX Open API 투자자별 수급 미지원"}
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_valuation_history(stock_code, _ver=1):
-    """공공데이터포털 KRX API: 연도별 PER/PBR/DIV (최근 10년).
-    getStockPriceInfo — per, pbr, dvdYld 필드.
-    연말 거래일 기준 연도별 집계 (API 호출 최소화).
+    """KRX Open API stk_bydd_trd: 연도별 PER/PBR/DIV (최근 10년).
+    연말 영업일 기준 연도별 집계.
+    필드: PER, PBR, DVD_YLD (배당수익률).
     """
     try:
         import pandas as pd
@@ -983,21 +981,22 @@ def fetch_valuation_history(stock_code, _ver=1):
                     d = date(year, 12, 31) - timedelta(days=delta)
                 else:
                     d = datetime.now().date() - timedelta(days=delta + 1)
-                items = _godata_get("getStockPriceInfo", {
-                    "basDt":      d.strftime("%Y%m%d"),
-                    "likeSrtnCd": stock_code,
-                })
-                if items:
-                    row = items[0]
+                rows = _krx_get("sto/stk_bydd_trd", {"basDd": d.strftime("%Y%m%d")})
+                row  = _krx_find_stock(rows, stock_code)
+                if row:
                     def _f(k):
                         v = row.get(k, "")
-                        try: return float(str(v).replace(",", ""))
+                        try: return float(str(v).replace(",", "").strip())
                         except: return None
+                    # KRX 필드명: PER, PBR, DVD_YLD (배당수익률)
+                    per = _f("PER")
+                    pbr = _f("PBR")
+                    div = _f("DVD_YLD")
                     records.append({
                         "date": pd.Timestamp(year=year, month=d.month, day=d.day),
-                        "PER": _f("per"),
-                        "PBR": _f("pbr"),
-                        "DIV": _f("dvdYld"),
+                        "PER": per,
+                        "PBR": pbr,
+                        "DIV": div,
                     })
                     break
 
