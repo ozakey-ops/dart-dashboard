@@ -25,16 +25,11 @@ except Exception:
     DART_KEY = os.environ.get("DART_KEY", "")
 
 # ══════════════════════════════════════════
-#  KRX 데이터포털 직접 호출 (인증 불필요)
+#  공공데이터포털 KRX API Key
+#  발급: https://www.data.go.kr → 한국거래소_주식시세정보 검색 → 활용신청
 # ══════════════════════════════════════════
-_KRX_URL = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-_KRX_HDR = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer":    "http://data.krx.co.kr/contents/MDC/MDI/mdcMdi.cmd",
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    "Accept":     "application/json, text/javascript, */*; q=0.01",
-    "X-Requested-With": "XMLHttpRequest",
-}
+KRX_API_KEY = "YOUR_KRX_API_KEY"   # ← 발급받은 serviceKey 입력
+_GODATA_URL  = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService"
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
@@ -60,7 +55,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 14
+_CACHE_VER = 15
 
 COLORS = {
     "blue":   "#2563eb",
@@ -902,60 +897,57 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
         return []
 
 
-# ─── KRX 데이터포털 직접 호출 ───
+# ─── 공공데이터포털 KRX API ───
 
-def _krx_post(bld, params):
-    """data.krx.co.kr REST API 공통 호출."""
-    data = {"bld": bld, "locale": "ko_KR", **params}
-    r = requests.post(_KRX_URL, headers=_KRX_HDR, data=data, timeout=15)
+def _godata_get(endpoint, params):
+    """공공데이터포털 KRX API 공통 호출. items 리스트 반환."""
+    url = f"{_GODATA_URL}/{endpoint}"
+    p = {"serviceKey": KRX_API_KEY, "resultType": "json",
+         "numOfRows": "100", "pageNo": "1", **params}
+    r = requests.get(url, params=p, timeout=15)
     r.raise_for_status()
     j = r.json()
-    # KRX 응답 키는 버전마다 다름 (output / OutBlock_1 / output1)
-    for key in ("output", "OutBlock_1", "output1", "block1"):
-        if key in j:
-            return j[key]
-    return []
+    # 응답 구조: response.body.items.item (단건 시 dict, 다건 시 list)
+    try:
+        item = j["response"]["body"]["items"]["item"]
+        return item if isinstance(item, list) else [item]
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_cap_history(stock_code, corp_cls="Y", _ver=1):
-    """KRX 직접 호출: 연도별 시가총액 추이 (최근 10년).
-    BLD: MDCSTAT01701 — 개별종목 시세 추이 (일별 시가총액 포함)
-    연말 거래일 데이터를 연도별로 집계.
+    """공공데이터포털 KRX API: 연도별 시가총액 (최근 10년).
+    getStockPriceInfo — mrktTotAmt(시가총액) 필드 사용.
+    연말 거래일 기준으로 연도별 집계.
     """
     try:
-        import pandas as pd
         from datetime import date, timedelta
 
         cur_year = datetime.now().year
         result   = {}
 
         for year in range(cur_year - 9, cur_year + 1):
-            # 해당 연도 마지막 영업일 후보 (12/31 ~ 12/27)
-            for delta in range(5):
+            # 연말 영업일 후보 (12/31 → 12/27까지 역순 탐색)
+            for delta in range(6):
                 if year < cur_year:
                     d = date(year, 12, 31) - timedelta(days=delta)
                 else:
                     d = datetime.now().date() - timedelta(days=delta + 1)
-                trd_dd = d.strftime("%Y%m%d")
-
-                rows = _krx_post("dbms/MDC/STAT/standard/MDCSTAT01701", {
-                    "isuCd":  stock_code,
-                    "strtDd": trd_dd,
-                    "endDd":  trd_dd,
+                items = _godata_get("getStockPriceInfo", {
+                    "basDt":     d.strftime("%Y%m%d"),
+                    "likeSrtnCd": stock_code,
                 })
-                if rows:
-                    row = rows[0]
-                    # 컬럼명 탐색 (한국거래소 버전별 차이)
-                    cap_raw = (row.get("MKTCAP") or row.get("mktcap")
-                               or row.get("시가총액") or "0")
+                if items:
+                    row = items[0]
+                    cap_raw = str(row.get("mrktTotAmt", "0")).replace(",", "")
                     result[str(year)] = {
-                        "mktcap": round(int(str(cap_raw).replace(",", "")) / 1e8)
+                        "mktcap": round(int(cap_raw) / 1e8) if cap_raw.isdigit() else 0
                     }
                     break
 
         if not result:
-            return {"__error__": f"시가총액 데이터 없음 (코드 {stock_code})"}
+            return {"__error__": f"시가총액 데이터 없음 (코드 {stock_code}) — API 키 확인 필요"}
         return result
     except Exception as e:
         return {"__error__": str(e)}
@@ -963,112 +955,99 @@ def fetch_market_cap_history(stock_code, corp_cls="Y", _ver=1):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_investor_trading(stock_code, _ver=1):
-    """KRX 직접 호출: 투자자별 일별 순매수 + 기간합계 (최근 1년).
-    BLD: MDCSTAT02401 — 투자자별 거래실적 (종목별)
+    """공공데이터포털 KRX API: 투자자별 거래실적 (최근 60일).
+    getStockInvestorTradingInfo 사용.
     """
     try:
         import pandas as pd
         from datetime import timedelta
 
-        end_dt   = datetime.now()
-        start_dt = end_dt - timedelta(days=365)
-        strt_dd  = start_dt.strftime("%Y%m%d")
-        end_dd   = end_dt.strftime("%Y%m%d")
+        end_dt  = datetime.now()
+        strt_dt = end_dt - timedelta(days=60)
 
-        rows = _krx_post("dbms/MDC/STAT/standard/MDCSTAT02401", {
-            "isuCd":  stock_code,
-            "strtDd": strt_dd,
-            "endDd":  end_dd,
-            "inqTpCd": "2",   # 2=거래대금 기준
+        items = _godata_get("getStockInvestorTradingInfo", {
+            "strtBasDt":  strt_dt.strftime("%Y%m%d"),
+            "endBasDt":   end_dt.strftime("%Y%m%d"),
+            "likeSrtnCd": stock_code,
+            "numOfRows":  "100",
         })
-        if not rows:
-            return {"__error__": "수급 데이터 없음"}
+        if not items:
+            return {"__error__": "투자자별 거래 데이터 없음"}
 
-        # 컬럼 탐색 — KRX 응답 키 예시: TRDVOL_BUY, TRDVOL_SEL, NETBUY
         records = []
-        for r in rows:
-            dt_raw = r.get("TRD_DD") or r.get("trd_dd") or r.get("일자") or ""
+        for row in items:
+            dt_raw = row.get("basDt", "")
             try:
-                dt = pd.to_datetime(dt_raw.replace("/", "-"))
+                dt = pd.to_datetime(dt_raw)
             except Exception:
                 continue
+            def _i(k): return int(str(row.get(k, "0")).replace(",", "") or "0")
             records.append({
-                "date":   dt,
-                "기관합계": int(str(r.get("INST_NETBUY") or r.get("기관") or "0").replace(",", "")),
-                "개인":   int(str(r.get("RETAIL_NETBUY") or r.get("개인") or "0").replace(",", "")),
-                "외국인":  int(str(r.get("FRGN_NETBUY") or r.get("외국인") or "0").replace(",", "")),
+                "date":  dt,
+                "기관합계": _i("instNetBuyTrdVal"),
+                "개인":   _i("reitNetBuyTrdVal"),
+                "외국인":  _i("frgnNetBuyTrdVal"),
             })
 
         if not records:
-            return {"__error__": "수급 파싱 실패 — KRX 응답 구조 확인 필요"}
+            return {"__error__": "수급 파싱 실패"}
 
         df_daily = pd.DataFrame(records).set_index("date").sort_index()
-        # 기간 합계
-        df_total = df_daily.sum().rename("순매수").to_frame()
-
-        return {"daily": df_daily, "total": df_total, "__raw__": rows[:2]}
+        df_total = df_daily.sum().to_frame(name="순매수")
+        return {"daily": df_daily, "total": df_total}
     except Exception as e:
         return {"__error__": str(e)}
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_valuation_history(stock_code, _ver=1):
-    """KRX 직접 호출: 월별 PER/PBR/DIV 추이 (최근 5년).
-    BLD: MDCSTAT03501 — 개별종목 PER/PBR/배당수익률
+    """공공데이터포털 KRX API: 월별 PER/PBR/DIV 추이 (최근 5년).
+    getStockPriceInfo — per, pbr, dvdYld 필드 사용.
+    월말 영업일 기준으로 월별 집계.
     """
     try:
         import pandas as pd
-        from datetime import timedelta
+        from datetime import date, timedelta
+        import calendar
 
         cur_year = datetime.now().year
-        strt_dd  = f"{cur_year - 5}0101"
-        end_dd   = datetime.now().strftime("%Y%m%d")
+        records  = []
 
-        rows = _krx_post("dbms/MDC/STAT/standard/MDCSTAT03501", {
-            "isuCd":  stock_code,
-            "strtDd": strt_dd,
-            "endDd":  end_dd,
-        })
-        if not rows:
-            return {"__error__": f"PER/PBR 데이터 없음 (코드 {stock_code})"}
-
-        records = []
-        for r in rows:
-            dt_raw = r.get("TRD_DD") or r.get("trd_dd") or r.get("일자") or ""
-            try:
-                dt = pd.to_datetime(dt_raw.replace("/", "-"))
-            except Exception:
-                continue
-
-            def _f(keys):
-                for k in keys:
-                    v = r.get(k)
-                    if v not in (None, "", "-"):
-                        try: return float(str(v).replace(",", ""))
-                        except: pass
-                return None
-
-            records.append({
-                "date": dt,
-                "PER":  _f(["PER", "per", "주가수익비율"]),
-                "PBR":  _f(["PBR", "pbr", "주가순자산비율"]),
-                "DIV":  _f(["DVD_YLD", "div", "배당수익률", "DIV"]),
-            })
+        # 최근 5년 × 12개월 = 60개 월말 날짜 조회
+        for year in range(cur_year - 4, cur_year + 1):
+            for month in range(1, 13):
+                if year == cur_year and month > datetime.now().month:
+                    break
+                last_day = calendar.monthrange(year, month)[1]
+                # 월말 영업일 후보 탐색
+                for delta in range(5):
+                    d = date(year, month, last_day) - timedelta(days=delta)
+                    items = _godata_get("getStockPriceInfo", {
+                        "basDt":     d.strftime("%Y%m%d"),
+                        "likeSrtnCd": stock_code,
+                    })
+                    if items:
+                        row = items[0]
+                        def _f(k):
+                            v = row.get(k, "")
+                            try: return float(str(v).replace(",", ""))
+                            except: return None
+                        records.append({
+                            "date": pd.Timestamp(year=year, month=month, day=d.day),
+                            "PER": _f("per"),
+                            "PBR": _f("pbr"),
+                            "DIV": _f("dvdYld"),
+                        })
+                        break
 
         if not records:
-            return {"__error__": "밸류에이션 파싱 실패"}
+            return {"__error__": f"밸류에이션 데이터 없음 (코드 {stock_code})"}
 
         df = (pd.DataFrame(records)
               .set_index("date")
-              .sort_index()
-              .apply(pd.to_numeric, errors="coerce"))
-
-        # 월말 리샘플
-        try:
-            df = df.resample("ME").last().dropna(how="all")
-        except Exception:
-            df = df.resample("M").last().dropna(how="all")
-
+              .apply(pd.to_numeric, errors="coerce")
+              .replace(0, float("nan"))
+              .dropna(how="all"))
         return {"df": df}
     except Exception as e:
         return {"__error__": str(e)}
