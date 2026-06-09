@@ -633,6 +633,60 @@ def fetch_major_shareholder_history(corp_code, _ver=1):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def fetch_large_holding_reports(corp_code, count=20, _ver=1):
+    """DART majorstock.json — 대량보유상황보고 조회.
+    corp_code만으로 호출; 최근 count건 반환.
+    반환: list of dict or []
+    """
+    if not corp_code:
+        return []
+    try:
+        r = requests.get(
+            f"{BASE}/majorstock.json",
+            params={"crtfc_key": DART_KEY, "corp_code": corp_code},
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("status") != "000":
+            return []
+        items = data.get("list") or []
+        rows = []
+        for item in sorted(items, key=lambda x: x.get("rcept_dt", ""), reverse=True)[:count]:
+            stkqy_s    = (item.get("stkqy") or "").replace(",", "").strip()
+            stkqy_irds_s = (item.get("stkqy_irds") or "").replace(",", "").strip()
+            try:
+                stkqy = int(stkqy_s) if stkqy_s else None
+            except ValueError:
+                stkqy = None
+            try:
+                stkqy_irds = int(stkqy_irds_s) if stkqy_irds_s not in ("", "-") else None
+            except ValueError:
+                stkqy_irds = None
+            try:
+                stkrt = float(item.get("stkrt") or 0)
+            except (ValueError, TypeError):
+                stkrt = None
+            try:
+                stkrt_irds = float(item.get("stkrt_irds") or 0)
+            except (ValueError, TypeError):
+                stkrt_irds = None
+            rows.append({
+                "rcept_dt":    item.get("rcept_dt", ""),
+                "rcept_no":    item.get("rcept_no", ""),
+                "report_tp":   item.get("report_tp", ""),
+                "repror":      item.get("repror", ""),
+                "stkqy":       stkqy,
+                "stkqy_irds":  stkqy_irds,
+                "stkrt":       stkrt,
+                "stkrt_irds":  stkrt_irds,
+                "report_resn": (item.get("report_resn") or "").replace("\n", " / ").strip(),
+            })
+        return rows
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_shareholder_changes(corp_code, count=10, _ver=1):
     """DART list.json — 지분공시(D) 최근 공시 목록 조회."""
     from datetime import timedelta
@@ -667,6 +721,46 @@ def fetch_shareholder_changes(corp_code, count=10, _ver=1):
     except Exception:
         pass
     return []
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_executive_stock_reports(corp_code, count=30, _ver=1):
+    """DART elestock.json — 임원·주요주주 소유보고 (corp_code only, no bsns_year)."""
+    if not DART_KEY:
+        return []
+    try:
+        r = requests.get(
+            f"{BASE}/elestock.json",
+            params={"crtfc_key": DART_KEY, "corp_code": corp_code},
+            timeout=10,
+        )
+        data = r.json()
+        if data.get("status") != "000":
+            return []
+        items = data.get("list") or []
+        results = []
+        for item in items:
+            irds_raw = (item.get("sp_stock_lmp_irds_cnt") or "0").replace(",", "")
+            try:
+                irds = int(irds_raw)
+            except ValueError:
+                irds = 0
+            results.append({
+                "rcept_no":      item.get("rcept_no", ""),
+                "rcept_dt":      item.get("rcept_dt", ""),
+                "repror":        (item.get("repror") or "").strip(),
+                "rgist_at":      (item.get("isu_exctv_rgist_at") or "").strip(),
+                "ofcps":         (item.get("isu_exctv_ofcps") or "").strip(),
+                "main_shrholdr": (item.get("isu_main_shrholdr") or "-").strip(),
+                "shares":        (item.get("sp_stock_lmp_cnt") or "0").replace(",", "").strip(),
+                "irds":          irds,
+                "irds_raw":      item.get("sp_stock_lmp_irds_cnt", "0"),
+                "rate":          (item.get("sp_stock_lmp_rate") or "").strip(),
+            })
+        results.sort(key=lambda x: x["rcept_dt"], reverse=True)
+        return results[:count]
+    except Exception:
+        return []
 
 
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
@@ -973,7 +1067,120 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             _section_header("최대주주 변동현황")
             st.caption("변동현황 데이터를 찾을 수 없습니다.")
 
-        # ③ 지분변동 공시 목록
+        # ③ 대량보유상황보고
+        with st.spinner("대량보유상황보고 조회 중..."):
+            large_holdings = fetch_large_holding_reports(corp_code, count=20)
+
+        _section_header("대량보유상황보고")
+        if large_holdings:
+            rows_lh = ""
+            for i, lh in enumerate(large_holdings):
+                bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
+                stkqy_str = f"{lh['stkqy']:,}" if lh["stkqy"] is not None else "-"
+                stkrt_str = f"{lh['stkrt']:.2f}%" if lh["stkrt"] is not None else "-"
+                # 증감 색상
+                if lh["stkqy_irds"] is not None and lh["stkqy_irds"] != 0:
+                    irds_color = "#dc2626" if lh["stkqy_irds"] > 0 else "#2563eb"
+                    irds_sym   = "▲" if lh["stkqy_irds"] > 0 else "▼"
+                    irds_str   = (f'<span style="color:{irds_color};font-size:.72rem;">'
+                                  f'{irds_sym}{abs(lh["stkqy_irds"]):,}</span>')
+                    rt_irds_color = "#dc2626" if (lh["stkrt_irds"] or 0) > 0 else "#2563eb"
+                    rt_irds_sym   = "▲" if (lh["stkrt_irds"] or 0) > 0 else "▼"
+                    rt_irds_str   = (f'<span style="color:{rt_irds_color};font-size:.72rem;">'
+                                     f'{rt_irds_sym}{abs(lh["stkrt_irds"] or 0):.2f}%</span>')
+                else:
+                    irds_str   = '<span style="color:#94a3b8;font-size:.72rem;">-</span>'
+                    rt_irds_str= irds_str
+                dart_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={lh['rcept_no']}"
+                tp_badge = (f'<span style="font-size:.62rem;background:#f0fdf4;color:#166534;'
+                            f'border-radius:4px;padding:1px 5px;">{lh["report_tp"]}</span>'
+                            if lh.get("report_tp") else "")
+                # 보고사유 줄임 처리
+                resn = lh.get("report_resn", "")
+                resn_short = resn[:40] + "…" if len(resn) > 40 else resn
+                rows_lh += (
+                    f'<tr style="background:{bg};">'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;white-space:nowrap;">'
+                    f'<a href="{dart_url}" target="_blank" style="color:#94a3b8;text-decoration:none;">'
+                    f'{lh["rcept_dt"]}</a></td>'
+                    f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;white-space:nowrap;">'
+                    f'{lh["repror"]}&nbsp;{tp_badge}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{stkqy_str}</td>'
+                    f'<td style="padding:5px 8px;text-align:right;">{irds_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;font-weight:600;color:#1e293b;text-align:right;">{stkrt_str}</td>'
+                    f'<td style="padding:5px 8px;text-align:right;">{rt_irds_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.70rem;color:#64748b;" title="{resn}">{resn_short}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:8px;">'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f1f5f9;">'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">접수일</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">보고자</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">보유주식수</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">증감</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">지분율</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">율증감</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">보고사유</th>'
+                f'</tr></thead>'
+                f'<tbody>{rows_lh}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("대량보유상황보고 데이터를 찾을 수 없습니다.")
+
+        # ④ 임원·주요주주 소유보고
+        with st.spinner("임원·주요주주 소유보고 조회 중..."):
+            exec_reports = fetch_executive_stock_reports(corp_code, count=30, _ver=_CACHE_VER)
+
+        _section_header("임원·주요주주 소유보고")
+        if exec_reports:
+            hdr = ("<tr><th>접수일</th><th>보고자</th><th>등기</th>"
+                   "<th>직위</th><th>주요주주</th><th>보유주식수</th><th>증감</th></tr>")
+            rows_er = ""
+            for er in exec_reports:
+                dt = er["rcept_dt"]
+                if len(dt) == 8:
+                    dt_fmt = f"{dt[:4]}-{dt[4:6]}-{dt[6:]}"
+                else:
+                    dt_fmt = dt
+                link = (f'<a href="https://dart.fss.or.kr/dsaf001/main.do?rcpNo={er["rcept_no"]}"'
+                        f' target="_blank">{dt_fmt}</a>')
+                irds = er["irds"]
+                irds_raw = er["irds_raw"]
+                if irds > 0:
+                    irds_cell = f'<span style="color:#dc2626">▲{irds_raw}</span>'
+                elif irds < 0:
+                    irds_cell = f'<span style="color:#2563eb">▼{irds_raw.lstrip("-")}</span>'
+                else:
+                    irds_cell = irds_raw
+                main_shr = "" if er["main_shrholdr"] in ("-", "") else er["main_shrholdr"]
+                try:
+                    shares_fmt = f'{int(er["shares"]):,}'
+                except Exception:
+                    shares_fmt = er["shares"]
+                rows_er += (
+                    f"<tr>"
+                    f"<td>{link}</td>"
+                    f"<td>{er['repror']}</td>"
+                    f"<td style='font-size:0.8em;color:#64748b'>{er['rgist_at']}</td>"
+                    f"<td>{er['ofcps']}</td>"
+                    f"<td style='color:#7c3aed;font-size:0.8em'>{main_shr}</td>"
+                    f"<td style='text-align:right'>{shares_fmt}</td>"
+                    f"<td style='text-align:right'>{irds_cell}</td>"
+                    f"</tr>"
+                )
+            st.markdown(
+                f'<div style="overflow-x:auto"><table class="dart-table">'
+                f'<thead>{hdr}</thead><tbody>{rows_er}</tbody></table></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
+
+        # ⑥ 지분변동 공시 목록
         with st.spinner("지분공시 조회 중..."):
             sh_changes = fetch_shareholder_changes(corp_code, count=10)
 
