@@ -547,7 +547,13 @@ def main():
     """, unsafe_allow_html=True)
 
     cache_key = f"{corp['corp_code']}_data"
-    if cache_key not in st.session_state or st.session_state.get(cache_key + "_corp") != corp["corp_code"]:
+    need_fetch = (
+        cache_key not in st.session_state
+        or st.session_state.get(cache_key + "_corp") != corp["corp_code"]
+        or st.session_state.get(cache_key + "_ver")  != _CACHE_VER
+        or st.session_state.get(cache_key + "_years") != (YEARS[0], YEARS[-1])
+    )
+    if need_fetch:
         with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (최대 20년)..."):
             data = fetch_all_years(corp["corp_code"], "CFS")
             if not data:
@@ -555,9 +561,11 @@ def main():
                 fs_div = "OFS"
             else:
                 fs_div = "CFS"
-        st.session_state[cache_key] = data
+        st.session_state[cache_key]           = data
         st.session_state[cache_key + "_fs"]   = fs_div
         st.session_state[cache_key + "_corp"] = corp["corp_code"]
+        st.session_state[cache_key + "_ver"]  = _CACHE_VER
+        st.session_state[cache_key + "_years"] = (YEARS[0], YEARS[-1])
     else:
         data   = st.session_state[cache_key]
         fs_div = st.session_state.get(cache_key + "_fs", "CFS")
