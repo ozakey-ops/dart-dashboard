@@ -300,17 +300,52 @@ def fetch_company_overview(corp_code, stock_code):
 
 @st.cache_data(ttl=3600, show_spinner=False)   # 1시간 캐시
 def fetch_exchange_rates():
-    """Frankfurter API로 환율 조회 (무료, 키 불필요)."""
+    """Frankfurter API로 환율 + 전일 대비 변화 조회."""
     try:
+        from datetime import timedelta
+        # 최신 환율
         r = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW,JPY", timeout=8)
         d = r.json()
         krw = d["rates"]["KRW"]
         jpy = d["rates"]["JPY"]
+        latest_date = d.get("date", "")
+
+        # 최근 5거래일 시계열로 전일 데이터 확보
+        start = (datetime.strptime(latest_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        r2 = requests.get(
+            f"https://api.frankfurter.app/{start}..{latest_date}?from=USD&to=KRW,JPY",
+            timeout=8
+        )
+        d2 = r2.json()
+        dates_sorted = sorted(d2.get("rates", {}).keys())
+
+        krw_prev = jpy_prev = None
+        if len(dates_sorted) >= 2:
+            prev = d2["rates"][dates_sorted[-2]]
+            krw_prev = prev.get("KRW")
+            jpy_prev = prev.get("JPY")
+
+        def chg(cur, prev):
+            if cur is None or prev is None:
+                return None
+            return round(cur - prev, 2)
+
+        usd_krw    = round(krw, 1)
+        jpy100_krw = round(krw / jpy * 100, 1)
+        jpy_usd    = round(jpy, 2)
+
+        usd_krw_chg    = chg(krw, krw_prev)
+        jpy100_krw_chg = chg(krw / jpy * 100, (krw_prev / jpy_prev * 100) if krw_prev and jpy_prev else None)
+        jpy_usd_chg    = chg(jpy, jpy_prev)
+
         return {
-            "usd_krw":     round(krw, 1),          # 원/달러
-            "jpy100_krw":  round(krw / jpy * 100, 1),  # 원/100엔
-            "jpy_usd":     round(jpy, 2),           # 엔/달러
-            "date":        d.get("date", ""),
+            "usd_krw":         usd_krw,
+            "jpy100_krw":      jpy100_krw,
+            "jpy_usd":         jpy_usd,
+            "usd_krw_chg":     round(usd_krw_chg, 1)    if usd_krw_chg    is not None else None,
+            "jpy100_krw_chg":  round(jpy100_krw_chg, 1) if jpy100_krw_chg is not None else None,
+            "jpy_usd_chg":     round(jpy_usd_chg, 2)    if jpy_usd_chg    is not None else None,
+            "date":            latest_date,
         }
     except Exception:
         return {}
@@ -419,7 +454,7 @@ def fetch_news(company_name, count=5):
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=5):
+def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
     """Yahoo Finance(yfinance)로 주가 OHLCV 조회.
     corp_cls: "Y"=KOSPI(.KS) / "K"=KOSDAQ(.KQ)
     timeframe: "day"(일봉) / "month"(월봉) / "year"(연봉)
@@ -444,7 +479,8 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=5):
         df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
         df = df[df["Volume"] > 0]
         if timeframe in ("1mo", "3mo", "6mo"):
-            df = df[df["High"] > df["Low"]]   # 일봉: 고가=저가인 phantom 캔들 제거
+            df = df[df.index.dayofweek < 5]       # 일봉: 주말 제거 (0=월 ~ 4=금)
+            df = df[df["High"] > df["Low"]]        # 일봉: 고가=저가인 phantom 캔들 제거
         data = []
         for dt, row in df.iterrows():
             data.append({
@@ -494,8 +530,23 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         "월봉": f"{corp_name}  월봉 (최근 10년){hint}",
         "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
     }
+    # 일봉: 이동평균선 설정 (0이면 미표시)
+    is_daily = sel in ("1달", "3달", "6달")
+    if is_daily:
+        ma_cols = st.columns(4)
+        ma_defaults = [5, 20, 60, 120]
+        ma_colors   = ["#f59e0b", "#8b5cf6", "#10b981", "#f43f5e"]
+        ma_periods  = []
+        for i, col in enumerate(ma_cols):
+            with col:
+                v = st.number_input(f"MA{i+1}", min_value=0, max_value=300,
+                                    value=ma_defaults[i],
+                                    key=f"ma{i+1}_{stock_code}",
+                                    label_visibility="visible")
+                ma_periods.append(int(v))
+
     with st.spinner("주가 데이터 조회 중..."):
-        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=5)
+        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=6)
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
@@ -508,6 +559,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     # 상승=빨강 / 하락=파랑 (한국식)
     vol_colors = ["#dc2626" if c >= o else "#2563eb"
                   for c, o in zip(closes, opens_)]
+    show_legend = is_daily and any(p > 0 for p in ma_periods)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         vertical_spacing=0.04, row_heights=[0.72, 0.28])
     fig.add_trace(go.Candlestick(
@@ -517,6 +569,19 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         decreasing_line_color="#2563eb", decreasing_fillcolor="#2563eb",
         line_width=1,
     ), row=1, col=1)
+    # 이동평균선 (일봉 + period > 0 일 때만)
+    if is_daily:
+        for period, color in zip(ma_periods, ma_colors):
+            if period > 0 and len(closes) >= period:
+                ma_vals = [None] * (period - 1) + [
+                    round(sum(closes[j - period:j]) / period, 0)
+                    for j in range(period, len(closes) + 1)
+                ]
+                fig.add_trace(go.Scatter(
+                    x=dates, y=ma_vals, mode="lines",
+                    name=f"MA{period}",
+                    line=dict(color=color, width=1.4),
+                ), row=1, col=1)
     fig.add_trace(go.Bar(
         x=dates, y=volumes, name="거래량",
         marker_color=vol_colors, opacity=0.75,
@@ -529,7 +594,9 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         xaxis_rangeslider_visible=False,
         margin=dict(l=8, r=8, t=38, b=8),
         height=420,
-        showlegend=False,
+        showlegend=show_legend,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0,
+                    font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         hovermode="x unified",
     )
     for row in [1, 2]:
@@ -741,21 +808,29 @@ def main():
     # 환율 카드
     fx = fetch_exchange_rates()
     if fx:
-        def fx_item(label, value, unit="원"):
+        def fx_item(label, value, chg, unit="원"):
+            if chg is not None and chg != 0:
+                sym   = "▲" if chg > 0 else "▼"
+                color = "#dc2626" if chg > 0 else "#2563eb"
+                chg_html = (f'<span style="font-size:.65rem;color:{color};margin-left:4px;">'
+                            f'{sym}{abs(chg):,.2f}</span>')
+            else:
+                chg_html = ""
             return (f'<div style="flex:1;text-align:center;padding:8px 4px;">'
                     f'<div style="font-size:.68rem;color:#64748b;margin-bottom:3px;">{label}</div>'
                     f'<div style="font-size:1rem;font-weight:700;color:#1e293b;">'
-                    f'{value:,.1f} <span style="font-size:.68rem;font-weight:400;color:#94a3b8;">{unit}</span></div>'
+                    f'{value:,.1f}{chg_html}'
+                    f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;margin-left:3px;">{unit}</span></div>'
                     f'</div>')
         st.markdown(
             f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
             f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 8px;margin:0 0 12px 0;">'
             f'<div style="display:flex;align-items:center;border-bottom:none;">'
-            f'{fx_item("원 / 달러", fx["usd_krw"])}'
+            f'{fx_item("원 / 달러",  fx["usd_krw"],    fx.get("usd_krw_chg"))}'
             f'<div style="color:#e2e8f0;">│</div>'
-            f'{fx_item("원 / 100엔", fx["jpy100_krw"])}'
+            f'{fx_item("원 / 100엔", fx["jpy100_krw"], fx.get("jpy100_krw_chg"))}'
             f'<div style="color:#e2e8f0;">│</div>'
-            f'{fx_item("엔 / 달러", fx["jpy_usd"], "엔")}'
+            f'{fx_item("엔 / 달러",  fx["jpy_usd"],    fx.get("jpy_usd_chg"), "엔")}'
             f'</div>'
             f'<div style="text-align:right;font-size:.62rem;color:#cbd5e1;padding:0 8px 4px;">'
             f'기준일 {fx["date"]}</div>'
