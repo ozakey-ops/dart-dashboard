@@ -57,7 +57,7 @@ COLORS = {
 # ─── 페이지 설정 ───
 
 st.set_page_config(
-    page_title="주가 및 재무 대시보드",
+    page_title="DART 재무 대시보드",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -351,6 +351,24 @@ def fetch_exchange_rates():
         return {}
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_treasury_yield():
+    """yfinance로 미국 10년 국채 수익률(^TNX) 조회."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^TNX").history(period="5d", interval="1d", auto_adjust=True)
+        if hist.empty:
+            return {}
+        hist = hist.dropna(subset=["Close"])
+        dates = sorted(hist.index)
+        cur  = round(float(hist.loc[dates[-1],  "Close"]), 3)
+        prev = round(float(hist.loc[dates[-2], "Close"]), 3) if len(dates) >= 2 else None
+        chg  = round(cur - prev, 3) if prev is not None else None
+        return {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
+    except Exception:
+        return {}
+
+
 # ─── 공시 ───
 
 def _parse_disc_list(items, count):
@@ -545,6 +563,36 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
+
+    # ── 시세 정보 바 (일봉만) ──
+    if is_daily:
+        last = chart_data[-1]
+        prev_close = chart_data[-2]["close"] if len(chart_data) >= 2 else None
+        chg_val = round(last["close"] - prev_close, 0) if prev_close else 0
+        chg_pct = round(chg_val / prev_close * 100, 2) if prev_close and prev_close != 0 else 0
+        turnover_eok = round(last["close"] * last["volume"] / 1e8, 1)
+        clr = "#dc2626" if chg_val >= 0 else "#2563eb"
+        sym = "▲" if chg_val > 0 else "▼" if chg_val < 0 else "━"
+        def ic(lbl, val, color="#475569"):
+            return (f'<span style="margin-right:12px;white-space:nowrap;">'
+                    f'<span style="font-size:.65rem;color:#94a3b8;">{lbl} </span>'
+                    f'<span style="font-size:.82rem;font-weight:600;color:{color};">{val}</span>'
+                    f'</span>')
+        st.markdown(
+            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+            f'padding:6px 12px;margin-bottom:6px;overflow-x:auto;white-space:nowrap;">'
+            + ic("시가",   f"{last['open']:,.0f}")
+            + ic("고가",   f"{last['high']:,.0f}", "#dc2626")
+            + ic("저가",   f"{last['low']:,.0f}",  "#2563eb")
+            + ic("종가",   f"{last['close']:,.0f}")
+            + ic("대비",   f"{sym}{abs(int(chg_val)):,}", clr)
+            + ic("등락률", f"{sym}{abs(chg_pct):.2f}%", clr)
+            + ic("거래량", f"{last['volume']:,.0f}")
+            + ic("거래대금", f"{turnover_eok:,.0f}억")
+            + f'</div>',
+            unsafe_allow_html=True
+        )
+
     dates   = [d["date"]   for d in chart_data]
     opens_  = [d["open"]   for d in chart_data]
     highs   = [d["high"]   for d in chart_data]
@@ -701,7 +749,7 @@ def main():
                   background:linear-gradient(135deg,#2563eb,#7c3aed);
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
-        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">기업 재무 대시보드</div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">DART 재무 대시보드</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -806,32 +854,39 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # 환율 카드
+    # 환율 + 미국채 카드
     fx = fetch_exchange_rates()
+    tn = fetch_treasury_yield()
     if fx:
-        def fx_item(label, value, chg, unit="원"):
+        def fx_item(label, value, chg, unit="원", fmt=".1f"):
             if chg is not None and chg != 0:
                 sym   = "▲" if chg > 0 else "▼"
                 color = "#dc2626" if chg > 0 else "#2563eb"
                 chg_html = (f'<span style="font-size:.65rem;color:{color};margin-left:4px;">'
-                            f'{sym}{abs(chg):,.2f}</span>')
+                            f'{sym}{abs(chg):{fmt}}</span>')
             else:
                 chg_html = ""
+            val_str = f"{value:,.3f}" if fmt == ".3f" else f"{value:,.1f}"
             return (f'<div style="flex:1;text-align:center;padding:8px 4px;">'
                     f'<div style="font-size:.68rem;color:#64748b;margin-bottom:3px;">{label}</div>'
                     f'<div style="font-size:1rem;font-weight:700;color:#1e293b;">'
-                    f'{value:,.1f}{chg_html}'
+                    f'{val_str}{chg_html}'
                     f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;margin-left:3px;">{unit}</span></div>'
                     f'</div>')
+        tn_html = ""
+        if tn:
+            tn_html = (f'<div style="color:#e2e8f0;">│</div>'
+                       + fx_item("미국채 10Y", tn["value"], tn.get("chg"), "%", fmt=".3f"))
         st.markdown(
             f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
             f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 8px;margin:0 0 12px 0;">'
-            f'<div style="display:flex;align-items:center;border-bottom:none;">'
+            f'<div style="display:flex;align-items:center;">'
             f'{fx_item("원 / 달러",  fx["usd_krw"],    fx.get("usd_krw_chg"))}'
             f'<div style="color:#e2e8f0;">│</div>'
             f'{fx_item("원 / 100엔", fx["jpy100_krw"], fx.get("jpy100_krw_chg"))}'
             f'<div style="color:#e2e8f0;">│</div>'
             f'{fx_item("엔 / 달러",  fx["jpy_usd"],    fx.get("jpy_usd_chg"), "엔")}'
+            f'{tn_html}'
             f'</div>'
             f'<div style="text-align:right;font-size:.62rem;color:#cbd5e1;padding:0 8px 4px;">'
             f'기준일 {fx["date"]}</div>'
