@@ -123,8 +123,6 @@ st.markdown("""
     .metric-card { padding:10px 12px !important; }
     .metric-value { font-size:1rem !important; }
 
-    /* 테이블 숫자 줄바꿈 방지 */
-    .dart-tbl td, .dart-tbl th { white-space:nowrap; }
   }
 
   @media (max-width: 480px) {
@@ -696,42 +694,6 @@ def fetch_large_holding_reports(corp_code, count=20, _ver=1):
         return []
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_shareholder_changes(corp_code, count=10, _ver=1):
-    """DART list.json — 지분공시(D) 최근 공시 목록 조회."""
-    from datetime import timedelta
-    end_de   = datetime.now().strftime("%Y%m%d")
-    start_de = (datetime.now() - timedelta(days=365 * 3)).strftime("%Y%m%d")
-    try:
-        r = requests.get(
-            f"{BASE}/list.json",
-            params={
-                "crtfc_key": DART_KEY,
-                "corp_code": corp_code,
-                "bgn_de": start_de,
-                "end_de": end_de,
-                "pblntf_ty": "D",   # 지분공시
-                "page_count": count,
-                "sort": "date",
-                "sort_mth": "desc",
-            },
-            timeout=10,
-        )
-        data = r.json()
-        if data.get("status") == "000" and data.get("list"):
-            return [
-                {
-                    "date":  item.get("rcept_dt", "")[:10],
-                    "title": item.get("report_nm", "").strip(),
-                    "filer": item.get("flr_nm", "").strip(),
-                    "rcept_no": item.get("rcept_no", ""),
-                }
-                for item in data["list"][:count]
-            ]
-    except Exception:
-        pass
-    return []
-
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_executive_stock_reports(corp_code, count=30, _ver=1):
@@ -761,11 +723,9 @@ def fetch_executive_stock_reports(corp_code, count=30, _ver=1):
                 "repror":        (item.get("repror") or "").strip(),
                 "rgist_at":      (item.get("isu_exctv_rgist_at") or "").strip(),
                 "ofcps":         (item.get("isu_exctv_ofcps") or "").strip(),
-                "main_shrholdr": (item.get("isu_main_shrholdr") or "-").strip(),
                 "shares":        (item.get("sp_stock_lmp_cnt") or "0").replace(",", "").strip(),
                 "irds":          irds,
                 "irds_raw":      item.get("sp_stock_lmp_irds_cnt", "0"),
-                "rate":          (item.get("sp_stock_lmp_rate") or "").strip(),
             })
         results.sort(key=lambda x: x["rcept_dt"], reverse=True)
         return results[:count]
@@ -946,13 +906,12 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         ma_period2 = int(st.number_input("이평선2", min_value=0, max_value=300,
                                          value=200, key=f"ma2b_{stock_code}"))
     tf_map = {"6달": "6mo", "2년": "24mo", "3년": "36mo", "월봉": "month", "연봉": "year"}
-    hint = "  ·  두 번 탭  자동 스케일"
     title_map = {
-        "6달": f"{corp_name}  일봉 (최근 6개월){hint}",
-        "2년": f"{corp_name}  일봉 (최근 2년){hint}",
-        "3년": f"{corp_name}  일봉 (최근 3년){hint}",
-        "월봉": f"{corp_name}  월봉 (최근 10년){hint}",
-        "연봉": f"{corp_name}  연봉 (최근 20년){hint}",
+        "6달": f"{corp_name}  일봉 (최근 6개월)",
+        "2년": f"{corp_name}  일봉 (최근 2년)",
+        "3년": f"{corp_name}  일봉 (최근 3년)",
+        "월봉": f"{corp_name}  월봉 (최근 10년)",
+        "연봉": f"{corp_name}  연봉 (최근 20년)",
     }
     is_daily = sel in ("6달", "2년", "3년")
 
