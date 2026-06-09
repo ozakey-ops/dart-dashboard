@@ -44,7 +44,7 @@ ACC = {
 }
 
 # 캐시 버전 — 이 숫자를 바꾸면 이전 캐시가 무효화됩니다
-_CACHE_VER = 7
+_CACHE_VER = 8
 
 COLORS = {
     "blue":   "#2563eb",
@@ -290,31 +290,42 @@ def _parse_disc_list(items, count):
 
 @st.cache_data(ttl=1800, show_spinner=False)   # 30분 캐시
 def fetch_disclosures(corp_code, count=5):
-    """DART 공시 목록 조회 — 거래소공시 우선, 없으면 전체공시 폴백."""
-    # 시도할 공시유형 순서: 거래소공시 → 주요사항보고 → 정기공시 → 전체(필터없음)
+    """DART 공시 목록 조회 — 날짜 범위 명시, 공시유형 순서대로 폴백."""
+    from datetime import timedelta
+    end_de = datetime.now().strftime("%Y%m%d")
+    bgn_de = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")  # 최근 2년
+
+    base_params = {
+        "crtfc_key":  DART_KEY,
+        "corp_code":  corp_code,
+        "bgn_de":     bgn_de,
+        "end_de":     end_de,
+        "page_count": count,
+        "page_no":    1,
+    }
+
+    # 거래소공시 → 주요사항보고 → 정기공시 → 전체공시 순 시도
     attempts = [
         ("I", "거래소공시"),
         ("B", "주요사항보고"),
         ("A", "정기공시"),
         ("",  "전체공시"),
     ]
+    last_err = ""
     for pblntf_ty, label in attempts:
         try:
-            params = {
-                "crtfc_key":  DART_KEY,
-                "corp_code":  corp_code,
-                "page_count": count,
-                "page_no":    1,
-            }
+            params = dict(base_params)
             if pblntf_ty:
                 params["pblntf_ty"] = pblntf_ty
             r = requests.get(f"{BASE}/list.json", params=params, timeout=10)
             d = r.json()
             if d.get("status") == "000" and d.get("list"):
                 return _parse_disc_list(d["list"], count), label
-        except Exception:
+            last_err = f"{label}: {d.get('status','?')} {d.get('message','')}"
+        except Exception as e:
+            last_err = str(e)
             continue
-    return [], "공시 조회 실패"
+    return [], last_err or "공시 조회 실패"
 
 
 # ─── 뉴스 ───
