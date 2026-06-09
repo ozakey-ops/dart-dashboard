@@ -30,7 +30,7 @@ except Exception:
 #  요청 헤더에 AUTH_KEY 로 전달
 # ══════════════════════════════════════════
 KRX_API_KEY  = "9376B2F5D8C845FB8A426A7F5359EB9B48D8A415"  # AUTH_KEY
-_KRX_API_URL = "https://openapi.krx.co.kr/svc/apis"
+_KRX_API_URL = "https://openapi.krx.co.kr/svc/sample/apis"
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
