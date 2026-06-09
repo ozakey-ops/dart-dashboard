@@ -1009,6 +1009,22 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         except Exception:
             pass
 
+        # ─ 오늘 PER / PBR (trailingPE, priceToBook) ─
+        try:
+            info = t.info or {}
+            t_per = info.get("trailingPE")
+            t_pbr = info.get("priceToBook")
+            today_pp = {}
+            if t_per and float(t_per) > 0:
+                today_pp["PER"] = round(float(t_per), 1)
+            if t_pbr and float(t_pbr) > 0:
+                today_pp["PBR"] = round(float(t_pbr), 2)
+            if today_pp:
+                today_label = datetime.now().strftime("%Y-%m-%d")
+                per_pbr[today_label] = today_pp
+        except Exception:
+            pass
+
         return {"mktcap": mktcap, "per_pbr": per_pbr}
     except Exception as e:
         return {"__error__": str(e)}
@@ -1403,7 +1419,14 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                     )
                 )
                 fig_mc.update_layout(
-                    **{k: v for k, v in PLOTLY_LAYOUT.items() if k != "yaxis"},
+                    **{k: v for k, v in PLOTLY_LAYOUT.items()
+                       if k not in ("yaxis", "xaxis")},
+                    xaxis=dict(
+                        type="category",
+                        gridcolor="#e2e8f0",
+                        tickfont=dict(color="#64748b"),
+                        linecolor="#e2e8f0",
+                    ),
                     yaxis=dict(
                         title="억 원",
                         tickformat=",",
@@ -1418,13 +1441,31 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         # ─────────────────────────────────────────────
         # ⑥ PER / PBR 밸류에이션 추이 (이중 Y축)
         # ─────────────────────────────────────────────
-        _section_header("PER / PBR 밸류에이션 추이", "yfinance 재무제표 + 연말 종가 기준")
+        _section_header("PER / PBR 밸류에이션 추이", "연말 종가 기준 · 오늘: trailing 기준")
         if "__error__" not in yf_data:
             per_pbr = yf_data.get("per_pbr", {})
             if per_pbr:
-                years_pp = sorted(per_pbr.keys())
+                # 연도 키(4자리)를 정수 정렬 후 오늘 날짜는 맨 끝에
+                today_key = datetime.now().strftime("%Y-%m-%d")
+                hist_keys = sorted(
+                    [k for k in per_pbr if k != today_key],
+                    key=lambda k: int(k)
+                )
+                years_pp = hist_keys + ([today_key] if today_key in per_pbr else [])
                 per_vals = [per_pbr[y].get("PER") for y in years_pp]
                 pbr_vals = [per_pbr[y].get("PBR") for y in years_pp]
+
+                # 오늘 포인트 강조 (빨간 마커)
+                per_marker = dict(
+                    size=[9 if y == today_key else 5 for y in years_pp],
+                    color=[COLORS["red"] if y == today_key else COLORS["blue"]
+                           for y in years_pp],
+                )
+                pbr_marker = dict(
+                    size=[9 if y == today_key else 5 for y in years_pp],
+                    color=[COLORS["red"] if y == today_key else COLORS["orange"]
+                           for y in years_pp],
+                )
 
                 fig_vl = make_subplots(specs=[[{"secondary_y": True}]])
                 fig_vl.add_trace(
@@ -1432,7 +1473,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                         x=years_pp, y=per_vals, name="PER",
                         mode="lines+markers",
                         line=dict(color=COLORS["blue"], width=2),
-                        marker=dict(size=5),
+                        marker=per_marker,
                         connectgaps=True,
                     ),
                     secondary_y=False,
@@ -1442,14 +1483,20 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                         x=years_pp, y=pbr_vals, name="PBR",
                         mode="lines+markers",
                         line=dict(color=COLORS["orange"], width=2, dash="dot"),
-                        marker=dict(size=5),
+                        marker=pbr_marker,
                         connectgaps=True,
                     ),
                     secondary_y=True,
                 )
                 fig_vl.update_layout(
                     **{k: v for k, v in PLOTLY_LAYOUT.items()
-                       if k not in ("yaxis", "legend")},
+                       if k not in ("yaxis", "legend", "xaxis")},
+                    xaxis=dict(
+                        type="category",
+                        gridcolor="#e2e8f0",
+                        tickfont=dict(color="#64748b"),
+                        linecolor="#e2e8f0",
+                    ),
                 )
                 fig_vl.update_yaxes(
                     title_text="PER (배)",
