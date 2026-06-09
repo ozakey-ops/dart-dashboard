@@ -479,85 +479,26 @@ def fetch_news(company_name, count=15):
 # ─── 최대주주 현황 (DART majorstock) ───
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_major_shareholders(corp_code, _ver=3):
-    """DART majorstock.json — 최대주주 현황 조회.
-    1) list.json으로 실제 제출된 사업/반기 보고서의 접수번호·사업연도 파악
-    2) 해당 연도·보고서코드로 majorstock.json 호출
-    반환: list of dict or {"error": str}
+def fetch_major_shareholders(corp_code, _ver=4):
+    """DART hyslrSttus.json — 임원·주요주주 소유현황 조회.
+    사업보고서 우선, 최근 5년 폴백.
+    반환: list of dict or []
     """
-    import re
-
     if not corp_code:
-        return {"error": "corp_code 없음"}
+        return []
 
-    # ── Step1: 실제 제출된 정기보고서 목록 조회 ──
-    # pblntf_ty=A : 정기공시  (사업·반기·분기보고서 모두 포함)
-    candidate_pairs = []   # [(bsns_year, reprt_code), ...]
-    try:
-        from datetime import timedelta
-        end_de   = datetime.now().strftime("%Y%m%d")
-        start_de = (datetime.now() - timedelta(days=365 * 4)).strftime("%Y%m%d")
-        r = requests.get(
-            f"{BASE}/list.json",
-            params={
-                "crtfc_key": DART_KEY,
-                "corp_code": corp_code,
-                "pblntf_ty": "A",          # 정기공시
-                "bgn_de": start_de,
-                "end_de": end_de,
-                "page_count": 20,
-                "sort": "date",
-                "sort_mth": "desc",
-            },
-            timeout=10,
-        )
-        d = r.json()
-        rcode_map = {
-            "사업보고서":   "11011",
-            "반기보고서":   "11012",
-            "분기보고서":   "11013",
-        }
-        if d.get("status") == "000":
-            for item in d.get("list", []):
-                nm = item.get("report_nm", "")
-                # 보고서명에서 사업연도 추출 ex) "사업보고서 (2025.12)"
-                m = re.search(r"\((\d{4})\.", nm)
-                if not m:
-                    # 접수일 기준 연도 - 1 폴백
-                    rcept_dt = item.get("rcept_dt", "")
-                    year = int(rcept_dt[:4]) - 1 if rcept_dt else None
-                else:
-                    year = int(m.group(1))
-                rcode = None
-                for keyword, code in rcode_map.items():
-                    if keyword in nm:
-                        rcode = code
-                        break
-                if year and rcode:
-                    pair = (year, rcode)
-                    if pair not in candidate_pairs:
-                        candidate_pairs.append(pair)
-    except Exception:
-        pass
-
-    # ── candidate_pairs 재정렬: 사업보고서(11011) 우선 ──
-    # list.json에서 가져온 연도 중 사업보고서만 먼저, 나머지 후순위
-    annual_pairs   = [(y, rc) for y, rc in candidate_pairs if rc == "11011"]
-    other_pairs    = [(y, rc) for y, rc in candidate_pairs if rc != "11011"]
-    # 폴백: 최근 5년 사업보고서
     cur_year = datetime.now().year
+    # 사업보고서(11011) → 반기(11012) 순으로, 최근 5년
+    candidates = []
     for y in range(cur_year - 1, cur_year - 6, -1):
-        if (y, "11011") not in annual_pairs:
-            annual_pairs.append((y, "11011"))
-    candidate_pairs = annual_pairs + other_pairs
+        candidates.append((y, "11011"))
+    for y in range(cur_year - 1, cur_year - 4, -1):
+        candidates.append((y, "11012"))
 
-    # ── Step2: majorstock.json 호출 ──
-    last_status = ""
-    debug_raw   = None   # 최초 status==000 응답 raw 저장 (디버그용)
-    for bsns_year, reprt_code in candidate_pairs:
+    for bsns_year, reprt_code in candidates:
         try:
             r = requests.get(
-                f"{BASE}/majorstock.json",
+                f"{BASE}/hyslrSttus.json",
                 params={
                     "crtfc_key": DART_KEY,
                     "corp_code": corp_code,
@@ -567,42 +508,24 @@ def fetch_major_shareholders(corp_code, _ver=3):
                 timeout=10,
             )
             data = r.json()
-            status = data.get("status", "")
-            last_status = f"{bsns_year}/{reprt_code}: {status} {data.get('message','')}"
-            if status != "000":
+            if data.get("status") != "000":
                 continue
 
             items = data.get("list") or []
-            if not items:
-                continue
-
-            # 첫 성공 응답의 raw 저장 (fields 확인용)
-            if debug_raw is None:
-                debug_raw = items[0]
-
             rows = []
             for item in items:
-                # 주주명: nm → 없으면 shinm(별칭 필드) → 없으면 스킵
-                name = (item.get("nm") or item.get("shinm") or "").strip()
-                relation    = (item.get("relate") or "").strip()
-                stock_knd   = (item.get("stock_knd") or "").strip()
-                rm          = (item.get("rm") or "").strip()
+                name      = (item.get("nm") or "").strip()
+                relation  = (item.get("relate") or "").strip()
+                stock_knd = (item.get("stock_knd") or "").strip()
+                rm        = (item.get("rm") or "").strip()
+                stlm_dt   = (item.get("stlm_dt") or "").strip()   # 결산일
 
-                # 기말 보유주식수 — 여러 필드명 시도
-                shares_s = (
-                    item.get("trmend_posesn_stock_co")
-                    or item.get("posesn_stock_co")
-                    or item.get("hold_stock_co")
-                    or ""
-                ).replace(",", "").strip()
+                shares_s    = (item.get("trmend_posesn_stock_co") or "").replace(",", "").strip()
+                ratio_pct_s = (item.get("trmend_posesn_stock_qota_rt") or "").replace(",", "").strip()
 
-                # 기말 지분율 — 여러 필드명 시도
-                ratio_pct_s = (
-                    item.get("trmend_posesn_stock_qota_rt")
-                    or item.get("posesn_stock_qota_rt")
-                    or item.get("hold_ratio")
-                    or ""
-                ).replace(",", "").strip()
+                # "계" 합계 row 제외
+                if name in ("계", "합계", ""):
+                    continue
 
                 try:
                     shares = int(shares_s) if shares_s else 0
@@ -613,32 +536,100 @@ def fetch_major_shareholders(corp_code, _ver=3):
                 except ValueError:
                     ratio_pct = None
 
-                # 이름이 없으면 해당 row 건너뜀
-                if not name:
-                    continue
-
-                # 주주명이 회사명과 동일하면 의미 없는 row → 건너뜀
                 rows.append({
-                    "name": name,
-                    "relation": relation,
-                    "shares": shares,
-                    "ratio": ratio_pct,
+                    "name":      name,
+                    "relation":  relation,
+                    "shares":    shares,
+                    "ratio":     ratio_pct,
                     "stock_knd": stock_knd,
-                    "rm": rm,
-                    "year": bsns_year,
-                    "rcode": reprt_code,
-                    "_raw_keys": list(item.keys()),   # 디버그용
+                    "rm":        rm,
+                    "stlm_dt":   stlm_dt,
+                    "year":      bsns_year,
+                    "rcode":     reprt_code,
                 })
 
             if rows:
                 return rows
-            # rows가 비었어도 debug_raw는 저장됐으므로 계속 탐색
-        except Exception as e:
-            last_status = str(e)
+        except Exception:
             continue
 
-    # 모든 시도 실패 → 오류 정보 + 마지막 raw 반환
-    return {"error": last_status or "데이터 없음", "debug_raw": debug_raw}
+    return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_major_shareholder_history(corp_code, _ver=1):
+    """DART hyslrChgSttus.json — 최대주주 변동현황 조회.
+    사업보고서 우선, 최근 5년 폴백.
+    반환: list of dict or []
+    """
+    if not corp_code:
+        return []
+
+    cur_year = datetime.now().year
+    candidates = []
+    for y in range(cur_year - 1, cur_year - 6, -1):
+        candidates.append((y, "11011"))
+    for y in range(cur_year - 1, cur_year - 4, -1):
+        candidates.append((y, "11012"))
+
+    for bsns_year, reprt_code in candidates:
+        try:
+            r = requests.get(
+                f"{BASE}/hyslrChgSttus.json",
+                params={
+                    "crtfc_key": DART_KEY,
+                    "corp_code": corp_code,
+                    "bsns_year": str(bsns_year),
+                    "reprt_code": reprt_code,
+                },
+                timeout=10,
+            )
+            data = r.json()
+            if data.get("status") != "000":
+                continue
+
+            items = data.get("list") or []
+            rows = []
+            for item in items:
+                nm       = (item.get("mxmm_shrholdr_nm") or "").strip()
+                chg_on   = (item.get("change_on") or "").strip()
+                shares_s = (item.get("posesn_stock_co") or "").replace(",", "").strip()
+                ratio_s  = (item.get("qota_rt") or "").strip()
+                cause    = (item.get("change_cause") or "").strip()
+                rm       = (item.get("rm") or "").strip()
+                stlm_dt  = (item.get("stlm_dt") or "").strip()
+
+                # 의미 없는 "-" 단일값 행 건너뜀
+                if nm in ("-", ""):
+                    continue
+
+                try:
+                    shares = int(shares_s) if shares_s not in ("", "-") else None
+                except ValueError:
+                    shares = None
+                try:
+                    ratio = float(ratio_s) if ratio_s not in ("", "-") else None
+                except ValueError:
+                    ratio = None
+
+                rows.append({
+                    "nm":      nm,
+                    "chg_on":  chg_on,
+                    "shares":  shares,
+                    "ratio":   ratio,
+                    "cause":   cause,
+                    "rm":      rm,
+                    "stlm_dt": stlm_dt,
+                    "year":    bsns_year,
+                    "rcode":   reprt_code,
+                })
+
+            if rows:
+                return rows
+        except Exception:
+            continue
+
+    return []
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -887,22 +878,14 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
         rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
                        "11013": "1분기보고서", "11014": "3분기보고서"}
-        # 오류 dict vs 리스트 구분
-        sh_error = None
-        if isinstance(shareholders, dict):
-            sh_error = shareholders.get("error", "")
-            shareholders = []
 
         if shareholders:
             ref = shareholders[0]
+            stlm_dt   = ref.get("stlm_dt", "")
             ref_label = f"{ref['year']}년 {rcode_label.get(ref['rcode'], ref['rcode'])}"
-            _section_header("최대주주 현황", ref_label)
-
-            # 디버그 expander — 필드 확인 후 삭제
-            with st.expander("🔍 API 원본 필드 확인 (확인 후 삭제 예정)", expanded=False):
-                st.json({k: v for k, v in ref.items() if k != "_raw_keys"})
-                if ref.get("_raw_keys"):
-                    st.caption(f"실제 키 목록: {ref['_raw_keys']}")
+            if stlm_dt:
+                ref_label += f"  ·  결산일 {stlm_dt}"
+            _section_header("최대주주·임원 소유현황", ref_label)
 
             rows_html = ""
             for i, sh in enumerate(shareholders):
@@ -939,21 +922,58 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                 unsafe_allow_html=True,
             )
         else:
-            _section_header("최대주주 현황")
-            if sh_error:
-                st.caption(f"최대주주 데이터를 불러올 수 없습니다. (응답: {sh_error})")
-            else:
-                st.caption("최대주주 데이터가 없습니다.")
-            # 디버그: raw 필드 확인용 expander
-            raw_item = (isinstance(shareholders, dict) and shareholders.get("debug_raw")) or \
-                       (shareholders and isinstance(shareholders[0], dict) and shareholders[0].get("_raw_keys") and shareholders[0])
-            if not raw_item and isinstance(shareholders, dict):
-                raw_item = shareholders.get("debug_raw")
-            if raw_item:
-                with st.expander("🔍 API 원본 필드 확인 (디버그)"):
-                    st.json(raw_item)
+            _section_header("최대주주·임원 소유현황")
+            st.caption("소유현황 데이터를 찾을 수 없습니다.")
 
-        # ② 지분변동 공시 목록
+        # ② 최대주주 변동현황 테이블
+        with st.spinner("최대주주 변동현황 조회 중..."):
+            sh_history = fetch_major_shareholder_history(corp_code)
+
+        if sh_history:
+            ref_h = sh_history[0]
+            h_label = f"{ref_h['year']}년 {rcode_label.get(ref_h['rcode'], ref_h['rcode'])}"
+            if ref_h.get("stlm_dt"):
+                h_label += f"  ·  결산일 {ref_h['stlm_dt']}"
+            _section_header("최대주주 변동현황", h_label)
+
+            rows_h = ""
+            for i, sh in enumerate(sh_history):
+                bg        = "#f8fafc" if i % 2 == 0 else "#ffffff"
+                shares_str = f"{sh['shares']:,}" if sh["shares"] is not None else "-"
+                ratio_str  = f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-"
+                chg_on     = sh.get("chg_on") or "-"
+                cause      = sh.get("cause") or "-"
+                rm_str     = sh.get("rm") or ""
+                rows_h += (
+                    f'<tr style="background:{bg};">'
+                    f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh["nm"]}</td>'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#64748b;text-align:center;white-space:nowrap;">{chg_on}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{shares_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;">{ratio_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#64748b;">{cause}</td>'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;">{rm_str}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:8px;">'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f1f5f9;">'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:left;font-weight:600;">최대주주명</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:center;font-weight:600;">변동일</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">보유주식수</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">지분율</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">변동원인</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">비고</th>'
+                f'</tr></thead>'
+                f'<tbody>{rows_h}</tbody>'
+                f'</table></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            _section_header("최대주주 변동현황")
+            st.caption("변동현황 데이터를 찾을 수 없습니다.")
+
+        # ③ 지분변동 공시 목록
         with st.spinner("지분공시 조회 중..."):
             sh_changes = fetch_shareholder_changes(corp_code, count=10)
 
