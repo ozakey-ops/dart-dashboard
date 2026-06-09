@@ -913,7 +913,16 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         if not shares:
             shares = (t.info or {}).get("sharesOutstanding")
 
-        # 당일 현재가 (시가총액 최신 기준)
+        # 당일 시가총액 (yfinance fast_info — KRX 공식 유통주식수 기반)
+        today_mktcap_eok = None
+        try:
+            mc = t.fast_info.market_cap
+            if mc:
+                today_mktcap_eok = round(float(mc) / 1e8)
+        except Exception:
+            pass
+
+        # 당일 현재가 (시가총액 직접 사용 불가 시 fallback)
         today_price = None
         try:
             today_price = float(t.fast_info.last_price)
@@ -927,24 +936,26 @@ def fetch_yf_annual_data(stock_code, corp_cls="Y", _ver=1):
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
 
         cur_year = datetime.now().year
-        year_closes = {}           # PER/PBR용: 모든 연도 연말 종가
-        mktcap_closes = {}         # 시가총액용: 과거는 연말, 당해는 당일가
+        year_closes = {}   # PER/PBR용: 연도별 연말 종가
         for yr in range(cur_year - 14, cur_year + 1):
             yr_data = hist[hist.index.year == yr]
             if not yr_data.empty:
-                close = float(yr_data["Close"].iloc[-1])
-                year_closes[yr] = close
-                # 시가총액: 현재 연도는 당일 현재가 우선 사용
-                if yr == cur_year and today_price:
-                    mktcap_closes[yr] = today_price
-                else:
-                    mktcap_closes[yr] = close
+                year_closes[yr] = float(yr_data["Close"].iloc[-1])
 
         # ─ 시가총액 ─
+        # 과거: 연말 종가 × yfinance 발행주식수
+        # 현재 연도: fast_info.market_cap 우선 (KRX 공식 유통주식수 기반)
         mktcap = {}
         if shares:
-            for yr, close in mktcap_closes.items():
-                mktcap[str(yr)] = round(close * shares / 1e8)
+            for yr, close in year_closes.items():
+                if yr != cur_year:
+                    mktcap[str(yr)] = round(close * shares / 1e8)
+        if today_mktcap_eok:
+            mktcap[str(cur_year)] = today_mktcap_eok
+        elif today_price and shares:
+            mktcap[str(cur_year)] = round(today_price * shares / 1e8)
+        elif shares and cur_year in year_closes:
+            mktcap[str(cur_year)] = round(year_closes[cur_year] * shares / 1e8)
 
         # ─ PER / PBR ─
         per_pbr = {}
