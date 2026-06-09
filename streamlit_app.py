@@ -6,6 +6,7 @@
 배포:  share.streamlit.io (무료)
 """
 
+import os
 import streamlit as st
 import requests
 import zipfile
@@ -16,9 +17,11 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 
 # ══════════════════════════════════════════
-#  ★ 설정 — API Key 입력
+#  API Key — Streamlit Secrets 또는 환경변수
+#  로컬: .streamlit/secrets.toml 에 DART_KEY = "your_key"
+#  Streamlit Cloud: Settings > Secrets 에 동일하게 입력
 # ══════════════════════════════════════════
-DART_KEY = "901de77da059b85e095a99ab9f2baf3264f7281f"
+DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", ""))
 # ══════════════════════════════════════════
 
 BASE          = "https://opendart.fss.or.kr/api"
@@ -711,6 +714,16 @@ def kpi_card(label, cur, prev, is_pct=False, invert=False):
 # ─── 메인 UI ───
 
 def main():
+    # API 키 확인
+    if not DART_KEY:
+        st.error(
+            "DART API 키가 설정되지 않았습니다.\n\n"
+            "**로컬 실행:** 프로젝트 루트에 `.streamlit/secrets.toml` 파일을 만들고 아래 내용을 추가하세요.\n"
+            "```\nDART_KEY = \"your_dart_api_key\"\n```\n\n"
+            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력하세요."
+        )
+        st.stop()
+
     # 헤더 (스티키 — 스크롤해도 상단 고정)
     st.markdown("""
     <div style="position:sticky;top:0;z-index:999;
