@@ -894,6 +894,20 @@ def fetch_stock_chart(stock_code, corp_cls="Y", timeframe="6mo", _ver=6):
 
 # ─── pykrx 시장 데이터 ───
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _krx_is_listed(stock_code):
+    """pykrx: 최근 30일 OHLCV 조회로 실제 상장 여부 확인."""
+    try:
+        from pykrx import stock as krx
+        from datetime import timedelta
+        end   = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+        df = krx.get_market_ohlcv(start, end, stock_code)
+        return df is not None and not df.empty
+    except Exception:
+        return False
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_cap_history(stock_code, _ver=1):
     """pykrx: 연도별 시가총액 (최근 12년).
@@ -901,28 +915,37 @@ def fetch_market_cap_history(stock_code, _ver=1):
     """
     try:
         from pykrx import stock as krx
-        import pandas as pd
         end   = datetime.now().strftime("%Y%m%d")
         start = str(datetime.now().year - 12) + "0101"
 
         # 1차 시도: freq='y'
         df = None
+        err_y = ""
         try:
             df = krx.get_market_cap(start, end, stock_code, freq="y")
-        except Exception:
-            pass
+        except Exception as _e:
+            err_y = str(_e)
 
         # 폴백: daily 조회 후 연말 값만 추출
+        err_daily = ""
+        df_daily_shape = "n/a"
         if df is None or df.empty:
-            df_daily = krx.get_market_cap(start, end, stock_code)
-            if df_daily is not None and not df_daily.empty:
-                try:
-                    df = df_daily.resample("YE").last()
-                except Exception:
-                    df = df_daily.resample("Y").last()
+            try:
+                df_daily = krx.get_market_cap(start, end, stock_code)
+                df_daily_shape = f"{df_daily.shape if df_daily is not None else None}"
+                if df_daily is not None and not df_daily.empty:
+                    try:
+                        df = df_daily.resample("YE").last()
+                    except Exception:
+                        df = df_daily.resample("Y").last()
+            except Exception as _e:
+                err_daily = str(_e)
 
         if df is None or df.empty:
-            return {"__error__": f"데이터 없음 (종목코드={stock_code}, 비상장 또는 조회 불가)"}
+            diag = f"freq_y={repr(err_y) or 'empty'}, daily_shape={df_daily_shape}, daily_err={repr(err_daily) or 'none'}"
+            if not _krx_is_listed(stock_code):
+                return {"__error__": f"KRX 미상장 종목 (코드 {stock_code})"}
+            return {"__error__": f"시가총액 데이터 없음 [{diag}]"}
 
         # 컬럼명 탐색 (pykrx 버전별 한/영 혼용 대응)
         cap_col   = next((c for c in df.columns if "시가총액" in c or "Mktcap" in c), None)
@@ -1002,7 +1025,9 @@ def fetch_valuation_history(stock_code, _ver=1):
                     df = df_daily.resample("M").last()
 
         if df is None or df.empty:
-            return {"__error__": f"데이터 없음 (종목코드={stock_code}, 비상장 또는 조회 불가)"}
+            if not _krx_is_listed(stock_code):
+                return {"__error__": f"KRX 미상장 종목 (코드 {stock_code}) — KOSPI·KOSDAQ 상장사만 조회 가능"}
+            return {"__error__": f"밸류에이션 데이터 없음 (코드 {stock_code})"}
 
         return {"df": df}
     except Exception as e:
