@@ -525,10 +525,10 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
                        key=f"sp_{stock_code}", label_visibility="collapsed")
     with col_ma1:
         ma_period1 = int(st.number_input("이평선1", min_value=0, max_value=300,
-                                         value=20, key=f"ma1_{stock_code}"))
+                                         value=25, key=f"ma1_{stock_code}"))
     with col_ma2:
         ma_period2 = int(st.number_input("이평선2", min_value=0, max_value=300,
-                                         value=60, key=f"ma2_{stock_code}"))
+                                         value=200, key=f"ma2_{stock_code}"))
     tf_map = {"6달": "6mo", "2년": "24mo", "3년": "36mo", "월봉": "month", "연봉": "year"}
     hint = "  ·  두 번 탭  자동 스케일"
     title_map = {
@@ -599,6 +599,11 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y"):
         fig.update_xaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0", row=row, col=1)
         fig.update_yaxes(gridcolor="#e2e8f0", linecolor="#e2e8f0",
                          tickformat=",", row=row, col=1)
+    # 일봉: category 축으로 설정 → 거래 없는 날 공백 제거, 캔들 연속 표시
+    if is_daily:
+        n = len(dates)
+        nticks = min(n, 12)   # 최대 12개 눈금만 표시
+        fig.update_xaxes(type="category", nticks=nticks, tickangle=-45)
     fig.update_yaxes(title_text="거래량", tickformat=".3s", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
