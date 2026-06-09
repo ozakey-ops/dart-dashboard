@@ -122,6 +122,9 @@ st.markdown("""
     /* 메트릭 카드 패딩 축소 */
     .metric-card { padding:10px 12px !important; }
     .metric-value { font-size:1rem !important; }
+
+    /* 테이블 숫자 줄바꿈 방지 */
+    .dart-tbl td, .dart-tbl th { white-space:nowrap; }
   }
 
   @media (max-width: 480px) {
@@ -1024,15 +1027,16 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         marker_color=vol_colors, opacity=0.75,
     ), row=2, col=1)
     fig.update_layout(
-        title=dict(text=title_map[sel], font=dict(size=13, color="#1e293b"), x=0),
+        title=dict(text=title_map[sel], font=dict(size=12, color="#1e293b"), x=0, y=0.98,
+                   yanchor="top"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(248,250,252,1)",
         font=dict(color="#64748b", size=11),
         xaxis_rangeslider_visible=False,
-        margin=dict(l=8, r=8, t=62, b=8),
+        margin=dict(l=8, r=8, t=80, b=8),
         height=420,
         showlegend=show_ma,
-        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1,
+        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="right", x=1,
                     font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         hovermode="x unified",
     )
@@ -1090,9 +1094,9 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                     f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">'
                     f'{sh["name"]}{knd_badge}</td>'
                     f'<td style="padding:5px 8px;font-size:.75rem;color:#64748b;text-align:center;">{sh["relation"]}</td>'
-                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{shares_str}</td>'
-                    f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;">{ratio_str}</td>'
-                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;">{rm_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;white-space:nowrap;">{shares_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;white-space:nowrap;">{ratio_str}</td>'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;white-space:nowrap;">{rm_str}</td>'
                     f'</tr>'
                 )
             st.markdown(
@@ -1163,7 +1167,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
         # ③ 대량보유상황보고
         with st.spinner("대량보유상황보고 조회 중..."):
-            large_holdings = fetch_large_holding_reports(corp_code, count=20)
+            large_holdings = fetch_large_holding_reports(corp_code, count=15)
 
         _section_header("대량보유상황보고")
         if large_holdings:
@@ -1213,7 +1217,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">보유주식수</th>'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">증감</th>'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">지분율</th>'
-                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">율증감</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">증감율</th>'
                 f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">보고사유</th>'
                 f'</tr></thead>'
                 f'<tbody>{rows_lh}</tbody>'
@@ -1225,45 +1229,57 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
         # ④ 임원·주요주주 소유보고
         with st.spinner("임원·주요주주 소유보고 조회 중..."):
-            exec_reports = fetch_executive_stock_reports(corp_code, count=10, _ver=_CACHE_VER)
+            exec_reports = fetch_executive_stock_reports(corp_code, count=15, _ver=_CACHE_VER)
 
         _section_header("임원·주요주주 소유보고")
         if exec_reports:
-            hdr = ("<tr><th>접수일</th><th>보고자</th><th>등기</th>"
-                   "<th>직위</th><th>주요주주</th><th>보유주식수</th><th>증감</th></tr>")
             rows_er = ""
-            for er in exec_reports:
+            for i, er in enumerate(exec_reports):
+                bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
                 dt = er["rcept_dt"]
                 dt_fmt = f"{dt[:4]}-{dt[4:6]}-{dt[6:]}" if len(dt) == 8 else dt
-                link = (f'<a href="https://dart.fss.or.kr/dsaf001/main.do?rcpNo={er["rcept_no"]}"'
-                        f' target="_blank">{dt_fmt}</a>')
+                dart_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={er['rcept_no']}"
                 irds = er["irds"]
                 irds_raw = er["irds_raw"]
                 if irds > 0:
-                    irds_cell = f'<span style="color:#dc2626">▲{irds_raw}</span>'
+                    irds_cell = f'<span style="color:#dc2626;font-size:.72rem;">▲{irds_raw}</span>'
                 elif irds < 0:
-                    irds_cell = f'<span style="color:#2563eb">▼{irds_raw.lstrip("-")}</span>'
+                    irds_cell = f'<span style="color:#2563eb;font-size:.72rem;">▼{irds_raw.lstrip("-")}</span>'
                 else:
-                    irds_cell = irds_raw
-                main_shr = "" if er["main_shrholdr"] in ("-", "") else er["main_shrholdr"]
+                    irds_cell = f'<span style="color:#94a3b8;font-size:.72rem;">-</span>'
+                rgist = er["rgist_at"].replace("비등기임원", "비등기").replace("등기임원", "등기")
+                rgist_badge = (f'<span style="font-size:.62rem;background:#f0fdf4;color:#166534;'
+                               f'border-radius:4px;padding:1px 5px;">{rgist}</span>'
+                               if rgist else "")
+                ofcps = er["ofcps"] or "-"
                 try:
                     shares_fmt = f'{int(er["shares"]):,}'
                 except Exception:
                     shares_fmt = er["shares"]
                 rows_er += (
-                    f"<tr>"
-                    f"<td>{link}</td>"
-                    f"<td>{er['repror']}</td>"
-                    f"<td style='font-size:0.8em;color:#64748b'>{er['rgist_at']}</td>"
-                    f"<td>{er['ofcps']}</td>"
-                    f"<td style='color:#7c3aed;font-size:0.8em'>{main_shr}</td>"
-                    f"<td style='text-align:right'>{shares_fmt}</td>"
-                    f"<td style='text-align:right'>{irds_cell}</td>"
-                    f"</tr>"
+                    f'<tr style="background:{bg};">'
+                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;white-space:nowrap;">'
+                    f'<a href="{dart_url}" target="_blank" style="color:#94a3b8;text-decoration:none;">'
+                    f'{dt_fmt}</a></td>'
+                    f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;white-space:nowrap;">'
+                    f'{er["repror"]}&nbsp;{rgist_badge}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;white-space:nowrap;">{ofcps}</td>'
+                    f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;white-space:nowrap;">{shares_fmt}</td>'
+                    f'<td style="padding:5px 8px;text-align:right;white-space:nowrap;">{irds_cell}</td>'
+                    f'</tr>'
                 )
             st.markdown(
-                f'<div style="overflow-x:auto"><table class="dart-table">'
-                f'<thead>{hdr}</thead><tbody>{rows_er}</tbody></table></div>',
+                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:8px;">'
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f1f5f9;">'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">접수일</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">보고자</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">직위</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">보유주식수</th>'
+                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;text-align:right;font-weight:600;">증감</th>'
+                f'</tr></thead>'
+                f'<tbody>{rows_er}</tbody>'
+                f'</table></div>',
                 unsafe_allow_html=True,
             )
         else:
@@ -1735,9 +1751,12 @@ def main():
                 name="전체합계",
                 x=eyears,
                 y=[emp_data[y].get("total", 0) for y in eyears],
-                mode="lines+markers",
+                mode="lines+markers+text",
                 line=dict(color="#f59e0b", width=2),
                 marker=dict(size=5),
+                text=[f'{emp_data[y].get("total", 0):,}' for y in eyears],
+                textposition="top center",
+                textfont=dict(size=9, color="#b45309"),
             ))
             fig_emp.update_layout(
                 title_text="정규직 직원 수 추이 (명)",
