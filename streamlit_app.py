@@ -1624,7 +1624,7 @@ def main():
 
             with sub_emp:
                 with st.spinner("직원 현황 조회 중..."):
-                    emp_years = [y for y in years if y >= 2015]   # 2015년 이후
+                    emp_years = [y for y in years if int(y) >= 2015]   # 2015년 이후
                     emp_data  = fetch_employee_status(corp["corp_code"], emp_years, _ver=_CACHE_VER)
 
                 if not emp_data:
