@@ -52,7 +52,6 @@ COLORS = {
     "green":  "#16a34a",
     "orange": "#ea580c",
     "purple": "#7c3aed",
-    "yellow": "#ca8a04",
 }
 
 # ─── 페이지 설정 ───
@@ -269,8 +268,7 @@ def fetch_year(corp_code, year, fs_div):
 
 @st.cache_data(ttl=86400, show_spinner=False)   # 1일 캐시
 def fetch_company_overview(corp_code, stock_code):
-    """DART company.json으로 기업 기본 정보 + FnGuide Business Summary."""
-    import re as _re
+    """DART company.json으로 기업 기본 정보를 조회합니다."""
     result = {}
 
     # 1. DART 기본 정보
@@ -284,8 +282,8 @@ def fetch_company_overview(corp_code, stock_code):
             est = d.get("est_dt", "")
             result = {
                 "ceo_nm":    d.get("ceo_nm", ""),
-                "corp_cls":      cls_map.get(d.get("corp_cls", ""), ""),
-                   "corp_cls_raw":  d.get("corp_cls", "Y"),
+                "corp_cls":     cls_map.get(d.get("corp_cls", ""), ""),
+                "corp_cls_raw": d.get("corp_cls", "Y"),
                 "est_dt":    f"{est[:4]}.{est[4:6]}" if len(est) >= 6 else "",
                 "acc_mt":    f"{d.get('acc_mt', '')}월" if d.get("acc_mt") else "",
                 "phn_no":    d.get("phn_no", ""),
@@ -294,91 +292,6 @@ def fetch_company_overview(corp_code, stock_code):
             }
     except Exception:
         pass
-
-    # 2. Business Summary — FnGuide 시도, 실패 시 네이버 금융 백업
-    result["summary"] = ""
-    result["summary_src"] = ""
-    if stock_code:
-        import re as _re2, html as _html_mod
-        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-              "AppleWebKit/537.36 (KHTML, like Gecko) "
-              "Chrome/124.0.0.0 Safari/537.36")
-
-        def _extract_text(html_text, patterns):
-            for pat in patterns:
-                m = _re2.search(pat, html_text, _re2.IGNORECASE)
-                if m:
-                    text = _re2.sub(r'<[^>]+>', ' ', m.group(1))
-                    text = _html_mod.unescape(text)
-                    text = _re2.sub(r'\s+', ' ', text).strip()
-                    if len(text) > 80:
-                        return text[:900]
-            return ""
-
-        # ── A. FnGuide (td.td_table_a1) ──
-        try:
-            hdrs = {
-                "User-Agent": UA,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9",
-                "Accept-Encoding": "gzip, deflate",
-                "Referer": "https://comp.fnguide.com/",
-            }
-            sess = requests.Session()
-            try:
-                sess.get("https://comp.fnguide.com/", headers=hdrs, timeout=5)
-            except Exception:
-                pass
-            url = (f"https://comp.fnguide.com/svo/ASPSYSTEM/ASP_Company.asp"
-                   f"?pGB=KB&gicode=A{stock_code}")
-            resp = sess.get(url, headers=hdrs, timeout=12)
-            raw = resp.content
-            html_text = ""
-            for enc in ["euc-kr", "cp949", "utf-8"]:
-                try:
-                    d = raw.decode(enc)
-                    if "동사" in d or "당사" in d or "사업" in d:
-                        html_text = d
-                        break
-                except Exception:
-                    continue
-            if not html_text:
-                html_text = resp.text
-            fg_patterns = [
-                r'<td[^>]+class=["\']td_table_a1["\'][^>]*>([\s\S]{80,3000}?)</td>',
-                r'Business\s*Summary[\s\S]{0,600}?<td[^>]*>([\s\S]{80,3000}?)</td>',
-                r'<td[^>]*>\s*((?:동사|당사|회사)는[\s\S]{80,2500}?)</td>',
-            ]
-            text = _extract_text(html_text, fg_patterns)
-            if text:
-                result["summary"] = text
-                result["summary_src"] = "FnGuide"
-        except Exception:
-            pass
-
-        # ── B. 네이버 금융 백업 (FnGuide 실패 시) ──
-        if not result["summary"]:
-            try:
-                nv_url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
-                r2 = requests.get(nv_url,
-                                  headers={"User-Agent": UA,
-                                           "Accept-Language": "ko-KR,ko;q=0.9"},
-                                  timeout=10)
-                r2.encoding = "euc-kr"
-                nv_html = r2.text
-                nv_patterns = [
-                    # 네이버 금융 종목 개요 / 기업개요 텍스트
-                    r'<div[^>]+class=["\'][^"\']*company_summary[^"\']*["\'][^>]*>([\s\S]{80,2000}?)</div>',
-                    r'<p[^>]+class=["\'][^"\']*intro[^"\']*["\'][^>]*>([\s\S]{80,2000}?)</p>',
-                    r'종목\s*개요[\s\S]{0,300}?<td[^>]*>([\s\S]{80,2000}?)</td>',
-                ]
-                text2 = _extract_text(nv_html, nv_patterns)
-                if text2:
-                    result["summary"] = text2
-                    result["summary_src"] = "Naver Finance"
-            except Exception:
-                pass
-
     return result
 
 
@@ -620,7 +533,7 @@ def make_bar(years, series, title):
         fig.add_trace(go.Bar(name=name, x=years, y=vals,
                              marker_color=colors_list[i % len(colors_list)],
                              marker_line_width=0))
-    fig.update_layout(title_text=title, title_font_color="#cdd9e5",
+    fig.update_layout(title_text=title, title_font_color="#1e293b",
                       title_font_size=12, barmode="group", **PLOTLY_LAYOUT)
     return fig
 
@@ -634,28 +547,13 @@ def make_line(years, series, title, is_pct=False):
                                  line=dict(color=colors_list[i % len(colors_list)], width=2),
                                  marker=dict(size=5)))
     suffix = "%" if is_pct else ""
-    fig.update_layout(title_text=title, title_font_color="#cdd9e5",
+    fig.update_layout(title_text=title, title_font_color="#1e293b",
                       title_font_size=12,
                       yaxis=dict(ticksuffix=suffix, gridcolor="#273047",
                                  tickfont=dict(color="#768390")),
                       **{k: v for k, v in PLOTLY_LAYOUT.items() if k != "yaxis"})
     return fig
 
-
-def make_mixed(years, bar_series, line_series, title):
-    fig = make_subplots(specs=[[{"secondary_y": False}]])
-    for name, vals in bar_series.items():
-        fig.add_trace(go.Bar(name=name, x=years, y=vals,
-                             marker_color=COLORS["blue"], opacity=0.75,
-                             marker_line_width=0))
-    line_colors = [COLORS["orange"], COLORS["purple"]]
-    for i, (name, vals) in enumerate(line_series.items()):
-        fig.add_trace(go.Scatter(name=name, x=years, y=vals, mode="lines+markers",
-                                 line=dict(color=line_colors[i], width=2),
-                                 marker=dict(size=5)))
-    fig.update_layout(title_text=title, title_font_color="#cdd9e5",
-                      title_font_size=12, barmode="group", **PLOTLY_LAYOUT)
-    return fig
 
 
 # ─── KPI 카드 ───
@@ -707,7 +605,6 @@ def main():
                   display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
       <div>
         <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">DART 재무 대시보드</div>
-        <div style="font-size:.72rem;color:#64748b;margin-top:2px;">전자공시 OpenAPI · K-IFRS 기준 최대 15년 분석</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -811,20 +708,6 @@ def main():
       {addr_html}{url_html}
     </div>
     """, unsafe_allow_html=True)
-
-    # Business Summary
-    with st.expander("📄 Business Summary", expanded=False):
-        if ov.get("summary"):
-            src_label = ov.get("summary_src", "")
-            src_html = (f'<div style="font-size:.65rem;color:#94a3b8;margin-bottom:6px;">'
-                        f'출처: {src_label}</div>') if src_label else ""
-            st.markdown(
-                f'{src_html}<div style="font-size:.85rem;color:#334155;line-height:1.7;">'
-                f'{ov["summary"]}</div>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.caption("Business Summary를 불러올 수 없습니다. (FnGuide / Naver Finance 차단 가능)")
 
     # 주가 차트
     render_stock_chart(corp.get("stock_code", ""), corp["corp_name"], ov.get("corp_cls_raw", "Y"))
