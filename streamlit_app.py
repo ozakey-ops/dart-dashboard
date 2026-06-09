@@ -763,6 +763,65 @@ def fetch_executive_stock_reports(corp_code, count=30, _ver=1):
         return []
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_employee_status(corp_code, years, _ver=1):
+    """DART empSttus.json — 연도별 직원 현황.
+    fo_bbm=='성별합계' 행만 추출해 남/여 정규직·계약직·합계를 반환.
+    반환: { year: {"male": int, "female": int, "total": int,
+                   "male_contract": int, "female_contract": int,
+                   "avg_tenure_m": float, "avg_tenure_f": float,
+                   "salary_m": int, "salary_f": int} }
+    """
+    if not DART_KEY:
+        return {}
+    result = {}
+    for year in years:
+        try:
+            r = requests.get(
+                f"{BASE}/empSttus.json",
+                params={
+                    "crtfc_key": DART_KEY,
+                    "corp_code":  corp_code,
+                    "bsns_year":  str(year),
+                    "reprt_code": "11011",   # 사업보고서
+                },
+                timeout=10,
+            )
+            data = r.json()
+            if data.get("status") != "000":
+                continue
+            items = [x for x in (data.get("list") or []) if x.get("fo_bbm") == "성별합계"]
+            rec = {}
+            for item in items:
+                def _int(v):
+                    try: return int((v or "0").replace(",", "").replace("-", "0"))
+                    except: return 0
+                def _float(v):
+                    try: return float((v or "0").replace(",", "").replace("-", "0"))
+                    except: return 0.0
+                sex = item.get("sexdstn", "")
+                if sex == "남":
+                    rec["male"]          = _int(item.get("rgllbr_co"))
+                    rec["male_contract"] = _int(item.get("cnttk_co"))
+                    rec["male_total"]    = _int(item.get("sm"))
+                    rec["avg_tenure_m"]  = _float(item.get("avrg_cnwk_sdytrn"))
+                    sal = (item.get("jan_salary_am") or "-").replace(",", "").replace("-", "")
+                    rec["salary_m"] = int(sal) if sal.isdigit() else None
+                elif sex == "여":
+                    rec["female"]          = _int(item.get("rgllbr_co"))
+                    rec["female_contract"] = _int(item.get("cnttk_co"))
+                    rec["female_total"]    = _int(item.get("sm"))
+                    rec["avg_tenure_f"]    = _float(item.get("avrg_cnwk_sdytrn"))
+                    sal = (item.get("jan_salary_am") or "-").replace(",", "").replace("-", "")
+                    rec["salary_f"] = int(sal) if sal.isdigit() else None
+            if rec:
+                rec["total"] = rec.get("male_total", 0) + rec.get("female_total", 0)
+                result[year] = rec
+        except Exception:
+            continue
+    return result
+
+
 # ─── 주가 차트 (yfinance / Yahoo Finance) ───
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -935,10 +994,10 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         plot_bgcolor="rgba(248,250,252,1)",
         font=dict(color="#64748b", size=11),
         xaxis_rangeslider_visible=False,
-        margin=dict(l=8, r=8, t=38, b=8),
+        margin=dict(l=8, r=8, t=62, b=8),
         height=420,
         showlegend=show_ma,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1,
                     font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
         hovermode="x unified",
     )
@@ -1078,7 +1137,6 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                 bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
                 stkqy_str = f"{lh['stkqy']:,}" if lh["stkqy"] is not None else "-"
                 stkrt_str = f"{lh['stkrt']:.2f}%" if lh["stkrt"] is not None else "-"
-                # 증감 색상
                 if lh["stkqy_irds"] is not None and lh["stkqy_irds"] != 0:
                     irds_color = "#dc2626" if lh["stkqy_irds"] > 0 else "#2563eb"
                     irds_sym   = "▲" if lh["stkqy_irds"] > 0 else "▼"
@@ -1089,13 +1147,12 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
                     rt_irds_str   = (f'<span style="color:{rt_irds_color};font-size:.72rem;">'
                                      f'{rt_irds_sym}{abs(lh["stkrt_irds"] or 0):.2f}%</span>')
                 else:
-                    irds_str   = '<span style="color:#94a3b8;font-size:.72rem;">-</span>'
-                    rt_irds_str= irds_str
+                    irds_str    = '<span style="color:#94a3b8;font-size:.72rem;">-</span>'
+                    rt_irds_str = irds_str
                 dart_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={lh['rcept_no']}"
                 tp_badge = (f'<span style="font-size:.62rem;background:#f0fdf4;color:#166534;'
                             f'border-radius:4px;padding:1px 5px;">{lh["report_tp"]}</span>'
                             if lh.get("report_tp") else "")
-                # 보고사유 줄임 처리
                 resn = lh.get("report_resn", "")
                 resn_short = resn[:40] + "…" if len(resn) > 40 else resn
                 rows_lh += (
@@ -1133,7 +1190,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
         # ④ 임원·주요주주 소유보고
         with st.spinner("임원·주요주주 소유보고 조회 중..."):
-            exec_reports = fetch_executive_stock_reports(corp_code, count=30, _ver=_CACHE_VER)
+            exec_reports = fetch_executive_stock_reports(corp_code, count=10, _ver=_CACHE_VER)
 
         _section_header("임원·주요주주 소유보고")
         if exec_reports:
@@ -1142,10 +1199,7 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             rows_er = ""
             for er in exec_reports:
                 dt = er["rcept_dt"]
-                if len(dt) == 8:
-                    dt_fmt = f"{dt[:4]}-{dt[4:6]}-{dt[6:]}"
-                else:
-                    dt_fmt = dt
+                dt_fmt = f"{dt[:4]}-{dt[4:6]}-{dt[6:]}" if len(dt) == 8 else dt
                 link = (f'<a href="https://dart.fss.or.kr/dsaf001/main.do?rcpNo={er["rcept_no"]}"'
                         f' target="_blank">{dt_fmt}</a>')
                 irds = er["irds"]
@@ -1179,40 +1233,6 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             )
         else:
             st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
-
-        # ⑥ 지분변동 공시 목록
-        with st.spinner("지분공시 조회 중..."):
-            sh_changes = fetch_shareholder_changes(corp_code, count=10)
-
-        _section_header("지분변동 공시")
-        if sh_changes:
-            rows_html2 = ""
-            for i, ch in enumerate(sh_changes):
-                bg = "#f8fafc" if i % 2 == 0 else "#ffffff"
-                dart_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={ch['rcept_no']}"
-                rows_html2 += (
-                    f'<tr style="background:{bg};">'
-                    f'<td style="padding:5px 8px;font-size:.72rem;color:#94a3b8;white-space:nowrap;">{ch["date"]}</td>'
-                    f'<td style="padding:5px 8px;font-size:.76rem;color:#1e293b;">'
-                    f'<a href="{dart_url}" target="_blank" style="color:#1e293b;text-decoration:none;">'
-                    f'{ch["title"]}</a></td>'
-                    f'<td style="padding:5px 8px;font-size:.72rem;color:#64748b;white-space:nowrap;">{ch["filer"]}</td>'
-                    f'</tr>'
-                )
-            st.markdown(
-                f'<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:16px;">'
-                f'<table style="width:100%;border-collapse:collapse;">'
-                f'<thead><tr style="background:#f1f5f9;">'
-                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">날짜</th>'
-                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">공시명</th>'
-                f'<th style="padding:6px 8px;font-size:.72rem;color:#64748b;font-weight:600;">제출인</th>'
-                f'</tr></thead>'
-                f'<tbody>{rows_html2}</tbody>'
-                f'</table></div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption("최근 지분변동 공시가 없습니다.")
 
 
 # ─── 차트 ───
@@ -1530,23 +1550,20 @@ def main():
             st.divider()
 
             # 재무제표 서브탭
-            sub_bs, sub_is, sub_cf = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표"])
+            sub_bs, sub_is, sub_cf, sub_emp = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표", "👥 직원 수 변동"])
 
             with sub_bs:
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig = make_bar(years,
-                                   {"자산총계": [data[y]["bs"].get("assets")     for y in years],
-                                    "부채총계": [data[y]["bs"].get("liabilities") for y in years],
-                                    "자본총계": [data[y]["bs"].get("equity")      for y in years]},
-                                   "자산 · 부채 · 자본 (억원)")
-                    st.plotly_chart(fig, use_container_width=True)
-                with c2:
-                    fig = make_line(years,
-                                    {"부채비율(%)":     [pct(data[y]["bs"].get("liabilities"), data[y]["bs"].get("equity")) for y in years],
-                                     "자기자본비율(%)": [pct(data[y]["bs"].get("equity"),      data[y]["bs"].get("assets"))  for y in years]},
-                                    "부채비율 & 자기자본비율", is_pct=True)
-                    st.plotly_chart(fig, use_container_width=True)
+                fig = make_bar(years,
+                               {"자산총계": [data[y]["bs"].get("assets")     for y in years],
+                                "부채총계": [data[y]["bs"].get("liabilities") for y in years],
+                                "자본총계": [data[y]["bs"].get("equity")      for y in years]},
+                               "자산 · 부채 · 자본 (억원)")
+                st.plotly_chart(fig, use_container_width=True)
+                fig = make_line(years,
+                                {"부채비율(%)":     [pct(data[y]["bs"].get("liabilities"), data[y]["bs"].get("equity")) for y in years],
+                                 "자기자본비율(%)": [pct(data[y]["bs"].get("equity"),      data[y]["bs"].get("assets"))  for y in years]},
+                                "부채비율 & 자기자본비율", is_pct=True)
+                st.plotly_chart(fig, use_container_width=True)
                 fig_re = make_line(years,
                                    {"이익잉여금": [data[y]["bs"].get("retainedEarnings") for y in years]},
                                    "이익잉여금 추이 (억원)")
@@ -1564,20 +1581,17 @@ def main():
                 st.dataframe(rows, hide_index=True, use_container_width=True)
 
             with sub_is:
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig = make_bar(years,
-                                   {"매출액":   [data[y]["is"].get("revenue")   for y in years],
-                                    "영업이익": [data[y]["is"].get("opIncome")  for y in years],
-                                    "순이익":   [data[y]["is"].get("netIncome") for y in years]},
-                                   "매출 · 영업이익 · 순이익 (억원)")
-                    st.plotly_chart(fig, use_container_width=True)
-                with c2:
-                    fig = make_line(years,
-                                    {"영업이익률(%)": [pct(data[y]["is"].get("opIncome"),  data[y]["is"].get("revenue")) for y in years],
-                                     "순이익률(%)":   [pct(data[y]["is"].get("netIncome"), data[y]["is"].get("revenue")) for y in years]},
-                                    "이익률 추이", is_pct=True)
-                    st.plotly_chart(fig, use_container_width=True)
+                fig = make_bar(years,
+                               {"매출액":   [data[y]["is"].get("revenue")   for y in years],
+                                "영업이익": [data[y]["is"].get("opIncome")  for y in years],
+                                "순이익":   [data[y]["is"].get("netIncome") for y in years]},
+                               "매출 · 영업이익 · 순이익 (억원)")
+                st.plotly_chart(fig, use_container_width=True)
+                fig = make_line(years,
+                                {"영업이익률(%)": [pct(data[y]["is"].get("opIncome"),  data[y]["is"].get("revenue")) for y in years],
+                                 "순이익률(%)":   [pct(data[y]["is"].get("netIncome"), data[y]["is"].get("revenue")) for y in years]},
+                                "이익률 추이", is_pct=True)
+                st.plotly_chart(fig, use_container_width=True)
                 rows = []
                 for y in reversed(years):
                     s = data[y]["is"]
@@ -1590,19 +1604,16 @@ def main():
                 st.dataframe(rows, hide_index=True, use_container_width=True)
 
             with sub_cf:
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig = make_bar(years,
-                                   {"영업CF": [data[y]["cf"].get("opCF")  for y in years],
-                                    "투자CF": [data[y]["cf"].get("invCF") for y in years],
-                                    "재무CF": [data[y]["cf"].get("finCF") for y in years]},
-                                   "현금흐름 (억원)")
-                    st.plotly_chart(fig, use_container_width=True)
-                with c2:
-                    fig = make_line(years,
-                                    {"기말현금": [data[y]["cf"].get("endCash") for y in years]},
-                                    "기말현금 추이 (억원)")
-                    st.plotly_chart(fig, use_container_width=True)
+                fig = make_bar(years,
+                               {"영업CF": [data[y]["cf"].get("opCF")  for y in years],
+                                "투자CF": [data[y]["cf"].get("invCF") for y in years],
+                                "재무CF": [data[y]["cf"].get("finCF") for y in years]},
+                               "현금흐름 (억원)")
+                st.plotly_chart(fig, use_container_width=True)
+                fig = make_line(years,
+                                {"기말현금": [data[y]["cf"].get("endCash") for y in years]},
+                                "기말현금 추이 (억원)")
+                st.plotly_chart(fig, use_container_width=True)
                 rows = []
                 for y in reversed(years):
                     c = data[y]["cf"]
@@ -1610,6 +1621,125 @@ def main():
                                  "투자CF": fmt(c.get("invCF")), "재무CF": fmt(c.get("finCF")),
                                  "기말현금": fmt(c.get("endCash"))})
                 st.dataframe(rows, hide_index=True, use_container_width=True)
+
+            with sub_emp:
+                with st.spinner("직원 현황 조회 중..."):
+                    emp_years = [y for y in years if y >= 2015]   # 2015년 이후
+                    emp_data  = fetch_employee_status(corp["corp_code"], emp_years, _ver=_CACHE_VER)
+
+                if not emp_data:
+                    st.caption("직원 현황 데이터를 찾을 수 없습니다.")
+                else:
+                    eyears = sorted(emp_data.keys())
+
+                    # ── 정규직 남/여 누적 막대 ──
+                    fig_emp = go.Figure()
+                    fig_emp.add_trace(go.Bar(
+                        name="남 정규직",
+                        x=eyears,
+                        y=[emp_data[y].get("male", 0) for y in eyears],
+                        marker_color="#2563eb",
+                        text=[f'{emp_data[y].get("male", 0):,}' for y in eyears],
+                        textposition="inside", textfont=dict(size=10, color="white"),
+                    ))
+                    fig_emp.add_trace(go.Bar(
+                        name="여 정규직",
+                        x=eyears,
+                        y=[emp_data[y].get("female", 0) for y in eyears],
+                        marker_color="#ec4899",
+                        text=[f'{emp_data[y].get("female", 0):,}' for y in eyears],
+                        textposition="inside", textfont=dict(size=10, color="white"),
+                    ))
+                    fig_emp.add_trace(go.Scatter(
+                        name="전체 합계",
+                        x=eyears,
+                        y=[emp_data[y].get("total", 0) for y in eyears],
+                        mode="lines+markers+text",
+                        line=dict(color="#f59e0b", width=2),
+                        marker=dict(size=6),
+                        text=[f'{emp_data[y].get("total", 0):,}' for y in eyears],
+                        textposition="top center", textfont=dict(size=9, color="#f59e0b"),
+                    ))
+                    fig_emp.update_layout(
+                        title_text="정규직 직원 수 추이 (명)",
+                        title_font_color="#1e293b", title_font_size=12,
+                        barmode="stack",
+                        **PLOTLY_LAYOUT,
+                    )
+                    st.plotly_chart(fig_emp, use_container_width=True)
+
+                    # ── 평균 근속연수 ──
+                    fig_tenure = go.Figure()
+                    fig_tenure.add_trace(go.Scatter(
+                        name="남 평균근속",
+                        x=eyears,
+                        y=[emp_data[y].get("avg_tenure_m", 0) for y in eyears],
+                        mode="lines+markers",
+                        line=dict(color="#2563eb", width=2), marker=dict(size=6),
+                    ))
+                    fig_tenure.add_trace(go.Scatter(
+                        name="여 평균근속",
+                        x=eyears,
+                        y=[emp_data[y].get("avg_tenure_f", 0) for y in eyears],
+                        mode="lines+markers",
+                        line=dict(color="#ec4899", width=2), marker=dict(size=6),
+                    ))
+                    fig_tenure.update_layout(
+                        title_text="평균 근속연수 (년)",
+                        title_font_color="#1e293b", title_font_size=12,
+                        yaxis=dict(ticksuffix="년", gridcolor="#e2e8f0"),
+                        **PLOTLY_LAYOUT,
+                    )
+                    st.plotly_chart(fig_tenure, use_container_width=True)
+
+                    # ── 월평균 급여 (데이터 있는 연도만) ──
+                    sal_years = [y for y in eyears if emp_data[y].get("salary_m") or emp_data[y].get("salary_f")]
+                    if sal_years:
+                        fig_sal = go.Figure()
+                        fig_sal.add_trace(go.Bar(
+                            name="남 월평균급여",
+                            x=sal_years,
+                            y=[round((emp_data[y].get("salary_m") or 0) / 1_000_000) for y in sal_years],
+                            marker_color="#2563eb",
+                            text=[f'{round((emp_data[y].get("salary_m") or 0)/1_000_000):,}만' for y in sal_years],
+                            textposition="outside", textfont=dict(size=9),
+                        ))
+                        fig_sal.add_trace(go.Bar(
+                            name="여 월평균급여",
+                            x=sal_years,
+                            y=[round((emp_data[y].get("salary_f") or 0) / 1_000_000) for y in sal_years],
+                            marker_color="#ec4899",
+                            text=[f'{round((emp_data[y].get("salary_f") or 0)/1_000_000):,}만' for y in sal_years],
+                            textposition="outside", textfont=dict(size=9),
+                        ))
+                        fig_sal.update_layout(
+                            title_text="월평균 급여 (만원)",
+                            title_font_color="#1e293b", title_font_size=12,
+                            barmode="group",
+                            yaxis=dict(ticksuffix="만", gridcolor="#e2e8f0"),
+                            **PLOTLY_LAYOUT,
+                        )
+                        st.plotly_chart(fig_sal, use_container_width=True)
+
+                    # ── 데이터 테이블 ──
+                    tbl_rows = []
+                    for y in reversed(eyears):
+                        d = emp_data[y]
+                        sal_m = f'{round((d.get("salary_m") or 0)/10000):,}만' if d.get("salary_m") else "-"
+                        sal_f = f'{round((d.get("salary_f") or 0)/10000):,}만' if d.get("salary_f") else "-"
+                        tbl_rows.append({
+                            "연도":       y,
+                            "전체합계":   f'{d.get("total", 0):,}',
+                            "남 정규직":  f'{d.get("male", 0):,}',
+                            "여 정규직":  f'{d.get("female", 0):,}',
+                            "남 계약직":  f'{d.get("male_contract", 0):,}',
+                            "여 계약직":  f'{d.get("female_contract", 0):,}',
+                            "남 근속(년)": d.get("avg_tenure_m", "-"),
+                            "여 근속(년)": d.get("avg_tenure_f", "-"),
+                            "남 월급여":  sal_m,
+                            "여 월급여":  sal_f,
+                        })
+                    st.dataframe(tbl_rows, hide_index=True, use_container_width=True)
 
     # ────────────────────────────────────────
     # 탭 3 : 공시 · 뉴스
