@@ -296,76 +296,44 @@ def fetch_company_overview(corp_code, stock_code):
     return result
 
 
-# ─── 환율 ───
+# ─── 시장 데이터 (환율 + 미국채) ───
 
-@st.cache_data(ttl=3600, show_spinner=False)   # 1시간 캐시
-def fetch_exchange_rates():
-    """Frankfurter API로 환율 + 전일 대비 변화 조회."""
-    try:
-        from datetime import timedelta
-        # 최신 환율 (latest = 가장 최근 거래일 기준)
-        r = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW,JPY", timeout=8)
-        r.raise_for_status()
-        d = r.json()
-        krw = d["rates"]["KRW"]
-        jpy = d["rates"]["JPY"]
-        latest_date = d.get("date", "")
-
-        # 최근 5거래일 시계열로 전일 데이터 확보
-        start = (datetime.strptime(latest_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
-        r2 = requests.get(
-            f"https://api.frankfurter.app/{start}..{latest_date}?from=USD&to=KRW,JPY",
-            timeout=8
-        )
-        d2 = r2.json()
-        dates_sorted = sorted(d2.get("rates", {}).keys())
-
-        krw_prev = jpy_prev = None
-        if len(dates_sorted) >= 2:
-            prev = d2["rates"][dates_sorted[-2]]
-            krw_prev = prev.get("KRW")
-            jpy_prev = prev.get("JPY")
-
-        def chg(cur, prev):
-            if cur is None or prev is None:
-                return None
-            return round(cur - prev, 2)
-
-        usd_krw    = round(krw, 1)
-        jpy100_krw = round(krw / jpy * 100, 1)
-        jpy_usd    = round(jpy, 2)
-
-        usd_krw_chg    = chg(krw, krw_prev)
-        jpy100_krw_chg = chg(krw / jpy * 100, (krw_prev / jpy_prev * 100) if krw_prev and jpy_prev else None)
-        jpy_usd_chg    = chg(jpy, jpy_prev)
-
-        return {
-            "usd_krw":         usd_krw,
-            "jpy100_krw":      jpy100_krw,
-            "jpy_usd":         jpy_usd,
-            "usd_krw_chg":     round(usd_krw_chg, 1)    if usd_krw_chg    is not None else None,
-            "jpy100_krw_chg":  round(jpy100_krw_chg, 1) if jpy100_krw_chg is not None else None,
-            "jpy_usd_chg":     round(jpy_usd_chg, 2)    if jpy_usd_chg    is not None else None,
-            "date":            latest_date,
-        }
-    except Exception:
-        return {}
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_treasury_yield():
-    """yfinance로 미국 10년 국채 수익률(^TNX) 조회."""
+@st.cache_data(ttl=300, show_spinner=False)   # 5분 캐시 (실시간)
+def fetch_market_data():
+    """yfinance로 환율 4종 + 미국채 10년 수익률 실시간 조회."""
     try:
         import yfinance as yf
-        hist = yf.Ticker("^TNX").history(period="5d", interval="1d", auto_adjust=True)
-        if hist.empty:
-            return {}
-        hist = hist.dropna(subset=["Close"])
-        dates = sorted(hist.index)
-        cur  = round(float(hist.loc[dates[-1],  "Close"]), 3)
-        prev = round(float(hist.loc[dates[-2], "Close"]), 3) if len(dates) >= 2 else None
-        chg  = round(cur - prev, 3) if prev is not None else None
-        return {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
+        # 심볼 → (배수, 소수점자리)
+        cfg = {
+            "USDKRW=X": (1,   1),   # USD/KRW
+            "JPYKRW=X":  (100, 1),   # 100JPY/KRW
+            "USDJPY=X":  (1,   2),   # USD/JPY
+            "^TNX":      (1,   3),   # 미국채 10Y (%)
+        }
+        raw = {}
+        for sym, (mul, nd) in cfg.items():
+            hist = yf.Ticker(sym).history(period="5d", interval="1d", auto_adjust=True)
+            if hist.empty:
+                continue
+            hist = hist.dropna(subset=["Close"])
+            dates = sorted(hist.index)
+            cur  = round(float(hist.loc[dates[-1],  "Close"]) * mul, nd)
+            prev = round(float(hist.loc[dates[-2], "Close"]) * mul, nd) if len(dates) >= 2 else None
+            chg  = round(cur - prev, nd) if prev is not None else None
+            raw[sym] = {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
+
+        ref_date = raw.get("USDKRW=X", {}).get("date", "")
+        return {
+            "usd_krw":        raw.get("USDKRW=X", {}).get("value"),
+            "jpy100_krw":     raw.get("JPYKRW=X",  {}).get("value"),
+            "usd_jpy":        raw.get("USDJPY=X",  {}).get("value"),
+            "bond10y":        raw.get("^TNX",      {}).get("value"),
+            "usd_krw_chg":    raw.get("USDKRW=X", {}).get("chg"),
+            "jpy100_krw_chg": raw.get("JPYKRW=X",  {}).get("chg"),
+            "usd_jpy_chg":    raw.get("USDJPY=X",  {}).get("chg"),
+            "bond10y_chg":    raw.get("^TNX",      {}).get("chg"),
+            "date":           ref_date,
+        }
     except Exception:
         return {}
 
@@ -861,41 +829,41 @@ def main():
     """, unsafe_allow_html=True)
 
     # 환율 + 미국채 카드
-    fx = fetch_exchange_rates()
-    tn = fetch_treasury_yield()
-    if fx:
-        def fx_item(label, value, chg, unit="원", fmt=".1f"):
+    md = fetch_market_data()
+    if md and md.get("usd_krw"):
+        def fx_item(label, value, chg, unit="", fmt=".1f"):
+            if value is None:
+                return ""
             if chg is not None and chg != 0:
-                sym   = "▲" if chg > 0 else "▼"
-                color = "#dc2626" if chg > 0 else "#2563eb"
+                sym_c  = "▲" if chg > 0 else "▼"
+                color  = "#dc2626" if chg > 0 else "#2563eb"
                 chg_html = (f'<span style="font-size:.65rem;color:{color};margin-left:4px;">'
-                            f'{sym}{abs(chg):{fmt}}</span>')
+                            f'{sym_c}{abs(chg):{fmt}}</span>')
             else:
                 chg_html = ""
-            val_str = f"{value:,.3f}" if fmt == ".3f" else f"{value:,.1f}"
+            val_str = f"{value:,.3f}" if fmt == ".3f" else (f"{value:,.2f}" if fmt == ".2f" else f"{value:,.1f}")
+            unit_html = (f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;margin-left:3px;">{unit}</span>'
+                         if unit else "")
             return (f'<div style="flex:1;text-align:center;padding:8px 4px;">'
                     f'<div style="font-size:.68rem;color:#64748b;margin-bottom:3px;">{label}</div>'
                     f'<div style="font-size:1rem;font-weight:700;color:#1e293b;">'
-                    f'{val_str}{chg_html}'
-                    f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;margin-left:3px;">{unit}</span></div>'
+                    f'{val_str}{chg_html}{unit_html}</div>'
                     f'</div>')
-        tn_html = ""
-        if tn:
-            tn_html = (f'<div style="color:#e2e8f0;">│</div>'
-                       + fx_item("미국채 10Y", tn["value"], tn.get("chg"), "%", fmt=".3f"))
+        divider = '<div style="color:#e2e8f0;flex-shrink:0;">│</div>'
         st.markdown(
             f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
             f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 8px;margin:0 0 12px 0;">'
             f'<div style="display:flex;align-items:center;">'
-            f'{fx_item("원 / 달러",  fx["usd_krw"],    fx.get("usd_krw_chg"))}'
-            f'<div style="color:#e2e8f0;">│</div>'
-            f'{fx_item("원 / 100엔", fx["jpy100_krw"], fx.get("jpy100_krw_chg"))}'
-            f'<div style="color:#e2e8f0;">│</div>'
-            f'{fx_item("엔 / 달러",  fx["jpy_usd"],    fx.get("jpy_usd_chg"), "엔")}'
-            f'{tn_html}'
-            f'</div>'
+            + fx_item("USD / KRW",    md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
+            + divider
+            + fx_item("100JPY / KRW", md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
+            + divider
+            + fx_item("USD / JPY",    md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
+            + divider
+            + fx_item("10-Yr Bond",   md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
+            + f'</div>'
             f'<div style="text-align:right;font-size:.65rem;color:#94a3b8;padding:0 10px 5px;">'
-            f'기준일 {fx["date"]}</div>'
+            f'기준일 {md["date"]}</div>'
             f'</div>',
             unsafe_allow_html=True
         )
