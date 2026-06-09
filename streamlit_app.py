@@ -916,10 +916,13 @@ def fetch_market_cap_history(stock_code, _ver=1):
         if df is None or df.empty:
             df_daily = krx.get_market_cap(start, end, stock_code)
             if df_daily is not None and not df_daily.empty:
-                df = df_daily.resample("YE").last()
+                try:
+                    df = df_daily.resample("YE").last()
+                except Exception:
+                    df = df_daily.resample("Y").last()
 
         if df is None or df.empty:
-            return {"__error__": "데이터 없음 (비상장 또는 조회 불가 종목)"}
+            return {"__error__": f"데이터 없음 (종목코드={stock_code}, 비상장 또는 조회 불가)"}
 
         # 컬럼명 탐색 (pykrx 버전별 한/영 혼용 대응)
         cap_col   = next((c for c in df.columns if "시가총액" in c or "Mktcap" in c), None)
@@ -993,10 +996,13 @@ def fetch_valuation_history(stock_code, _ver=1):
         if df is None or df.empty:
             df_daily = krx.get_market_fundamental(start, end, stock_code)
             if df_daily is not None and not df_daily.empty:
-                df = df_daily.resample("ME").last()
+                try:
+                    df = df_daily.resample("ME").last()
+                except Exception:
+                    df = df_daily.resample("M").last()
 
         if df is None or df.empty:
-            return {"__error__": "데이터 없음 (비상장 또는 조회 불가 종목)"}
+            return {"__error__": f"데이터 없음 (종목코드={stock_code}, 비상장 또는 조회 불가)"}
 
         return {"df": df}
     except Exception as e:
