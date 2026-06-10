@@ -63,11 +63,20 @@ _CACHE_VER = 21
 
 # 계정과목 키워드 매핑
 ACC: dict[str, list[str]] = {
-    "assets":           ["자산총계"],
-    "liabilities":      ["부채총계"],
-    "equity":           ["자본총계", "자본합계"],
-    "revenue":          ["매출액", "수익(매출액)", "영업수익", "매출", "총수익"],
-    "opIncome":         ["영업이익", "영업이익(손실)", "영업손익"],
+    "assets":      ["자산총계"],
+    "liabilities": ["부채총계"],
+    "equity":      ["자본총계", "자본합계"],
+    "revenue": [
+        # 일반 기업
+        "매출액", "수익(매출액)", "영업수익", "매출", "총수익",
+        # 은행·금융지주 (이자수익은 구성항목이므로 합계 계정을 우선)
+        "영업수익합계", "순영업수익", "이자수익", "순이자이익",
+        # 보험업
+        "보험료수익", "보험영업수익", "수입보험료",
+        # 증권·캐피탈
+        "순수수료수익", "수수료수익",
+    ],
+    "opIncome": ["영업이익", "영업이익(손실)", "영업손익"],
     "netIncome":        ["당기순이익", "당기순이익(손실)", "당기순손익"],
     "retainedEarnings": ["이익잉여금(결손금)", "이익잉여금", "결손금",
                          "미처분이익잉여금", "미처리결손금"],
@@ -1511,12 +1520,22 @@ def _render_fs_tab(corp: dict) -> None:
     )
     if need_fetch:
         with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
-            data = fetch_all_years(corp["corp_code"], "CFS")
-            if not data:
-                data   = fetch_all_years(corp["corp_code"], "OFS")
+            cfs = fetch_all_years(corp["corp_code"], "CFS")
+            ofs = fetch_all_years(corp["corp_code"], "OFS")
+
+            if cfs and ofs:
+                # CFS 우선, CFS에 없는 연도는 OFS로 보완 (금융지주·은행 등 CFS 이력이 짧은 경우 대응)
+                data   = {**ofs, **cfs}
+                fs_div = "CFS+OFS"
+            elif cfs:
+                data   = cfs
+                fs_div = "CFS"
+            elif ofs:
+                data   = ofs
                 fs_div = "OFS"
             else:
-                fs_div = "CFS"
+                data   = {}
+                fs_div = "-"
         st.session_state[cache_key]            = data
         st.session_state[cache_key + "_fs"]    = fs_div
         st.session_state[cache_key + "_corp"]  = corp["corp_code"]
@@ -1531,7 +1550,9 @@ def _render_fs_tab(corp: dict) -> None:
         return
 
     years    = sorted(data.keys())
-    fs_label = "연결재무제표" if fs_div == "CFS" else "별도재무제표"
+    fs_label_map = {"CFS": "연결재무제표", "OFS": "별도재무제표",
+                    "CFS+OFS": "연결(최근)+별도(과거) 혼합", "-": ""}
+    fs_label = fs_label_map.get(fs_div, fs_div)
     st.caption(f"{fs_label} 기준 · {years[0]}~{years[-1]} · 단위: 억원")
 
     ly      = years[-1]
