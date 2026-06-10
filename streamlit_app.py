@@ -1882,16 +1882,13 @@ def main() -> None:
         else:
             st.session_state["_ac_results"] = []
 
-    # 검색창 + 자동완성 CSS
+    # 검색창 기본 CSS (AC 라디오는 JS 스코핑으로 별도 처리)
     st.markdown("""
     <style>
     div[data-testid="stTextInput"] input { font-size: 1rem !important; }
-
-    /* ── 자동완성 radio 드롭다운 스타일 ── */
-    div[data-testid="stRadio"] {
-        margin-top: -4px !important;
-    }
-    div[data-testid="stRadio"] > div {
+    /* AC 드롭다운 전용 스타일 — JS가 #dart-ac-drop ID를 부여한 후 적용 */
+    #dart-ac-drop { margin-top: -4px !important; }
+    #dart-ac-drop > div {
         border: 1px solid #d0d0d0 !important;
         border-top: none !important;
         border-radius: 0 0 8px 8px !important;
@@ -1899,12 +1896,9 @@ def main() -> None:
         box-shadow: 0 4px 10px rgba(0,0,0,.08) !important;
         gap: 0 !important;
     }
-    /* 헤더 레이블 숨김 */
-    div[data-testid="stRadio"] > label { display: none !important; }
-    /* 라디오 원 숨김 */
-    div[data-testid="stRadio"] label > div:first-child { display: none !important; }
-    /* 각 항목 행 스타일 */
-    div[data-testid="stRadio"] label {
+    #dart-ac-drop > label { display: none !important; }
+    #dart-ac-drop label > div:first-child { display: none !important; }
+    #dart-ac-drop label {
         display: flex !important;
         align-items: center !important;
         padding: 10px 14px !important;
@@ -1917,12 +1911,8 @@ def main() -> None:
         font-weight: 400 !important;
         letter-spacing: -.3px !important;
     }
-    div[data-testid="stRadio"] label:last-of-type { border-bottom: none !important; }
-    div[data-testid="stRadio"] label:hover { background: #f8f8f8 !important; }
-    /* 선택된 항목 강조 제거 */
-    div[data-testid="stRadio"] label[data-checked="true"] {
-        background: #f0f7ff !important;
-    }
+    #dart-ac-drop label:last-of-type { border-bottom: none !important; }
+    #dart-ac-drop label:hover { background: #f8f8f8 !important; }
     </style>""", unsafe_allow_html=True)
 
     ac_results: list[dict] = st.session_state.get("_ac_results", [])
@@ -1945,10 +1935,12 @@ def main() -> None:
                 c     = _name_map.get(code, {})
                 stock = c.get("stock_code", "") or "비상장"
                 name  = c.get("corp_name", "")
-                # 돋보기 아이콘 + 이름 + 종목코드(우측)
-                pad = "　" * max(1, 18 - len(name))   # 전각 공백으로 우측 정렬 근사
+                pad   = "　" * max(1, 18 - len(name))
                 return f"🔍  {name}{pad}{stock}"
 
+            # 센티넬 — JS가 바로 다음 stRadio를 찾아 #dart-ac-drop ID 부여
+            st.markdown('<div id="dart-ac-sentinel" style="height:0;overflow:hidden;"></div>',
+                        unsafe_allow_html=True)
             sel = st.radio(
                 "", _codes,
                 format_func=_fmt_ac,
@@ -1956,9 +1948,31 @@ def main() -> None:
                 index=None,
                 label_visibility="collapsed",
             )
+            # JS: 센티넬 다음 stRadio에만 ID 적용 (기간 라디오 등 다른 위젯 영향 없음)
+            components.html("""<script>
+(function(){
+  var p=window.parent.document;
+  function tag(){
+    var s=p.getElementById('dart-ac-sentinel');
+    if(!s)return;
+    var mc=s.closest('[data-testid="stMarkdown"]')||s.parentElement;
+    var el=mc;
+    while((el=el.nextElementSibling)){
+      var r=el.querySelector('[data-testid="stRadio"]')||
+            (el.getAttribute&&el.getAttribute('data-testid')==='stRadio'?el:null);
+      if(r){r.id='dart-ac-drop';break;}
+    }
+  }
+  [50,200,500,1200].forEach(function(t){setTimeout(tag,t);});
+  new MutationObserver(tag).observe(p.body,{childList:true,subtree:true});
+})();
+</script>""", height=0, scrolling=False)
+
             if sel and sel in _name_map:
-                st.session_state["selected_corp"] = _name_map[sel]
-                st.session_state["_ac_results"]   = []
+                chosen = _name_map[sel]
+                st.session_state["selected_corp"]  = chosen
+                st.session_state["_ac_results"]    = []
+                st.session_state["_search_input"]  = chosen["corp_name"]  # 검색창 값 업데이트
                 st.rerun()
 
     with col_btn:
