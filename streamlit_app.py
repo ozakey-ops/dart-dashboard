@@ -1882,31 +1882,48 @@ def main() -> None:
         else:
             st.session_state["_ac_results"] = []
 
-    # 자동완성 항목 클릭 시 JS→Python 통신 채널
-    def _on_ac_channel_change() -> None:
-        corp_code = st.session_state.get("_ac_channel", "").strip()
-        if not corp_code:
-            return
-        for c in st.session_state.get("_ac_results", []):
-            if c["corp_code"] == corp_code:
-                st.session_state["selected_corp"] = c
-                st.session_state["_ac_results"]   = []
-                st.session_state["_ac_channel"]   = ""
-                break
-
-    # 검색 입력창
+    # 검색창 + 자동완성 CSS
     st.markdown("""
     <style>
     div[data-testid="stTextInput"] input { font-size: 1rem !important; }
-    /* 숨김 채널 인풋 */
-    [data-testid="stTextInput"]:has(input[placeholder="__DART_AC__"]) {
-        max-height:0;overflow:hidden;margin:0;padding:0;opacity:0;pointer-events:none;
+
+    /* ── 자동완성 radio 드롭다운 스타일 ── */
+    div[data-testid="stRadio"] {
+        margin-top: -4px !important;
+    }
+    div[data-testid="stRadio"] > div {
+        border: 1px solid #d0d0d0 !important;
+        border-top: none !important;
+        border-radius: 0 0 8px 8px !important;
+        overflow: hidden !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,.08) !important;
+        gap: 0 !important;
+    }
+    /* 헤더 레이블 숨김 */
+    div[data-testid="stRadio"] > label { display: none !important; }
+    /* 라디오 원 숨김 */
+    div[data-testid="stRadio"] label > div:first-child { display: none !important; }
+    /* 각 항목 행 스타일 */
+    div[data-testid="stRadio"] label {
+        display: flex !important;
+        align-items: center !important;
+        padding: 10px 14px !important;
+        border-bottom: 1px solid #f2f2f2 !important;
+        margin: 0 !important;
+        background: white !important;
+        cursor: pointer !important;
+        font-size: 14px !important;
+        color: #202020 !important;
+        font-weight: 400 !important;
+        letter-spacing: -.3px !important;
+    }
+    div[data-testid="stRadio"] label:last-of-type { border-bottom: none !important; }
+    div[data-testid="stRadio"] label:hover { background: #f8f8f8 !important; }
+    /* 선택된 항목 강조 제거 */
+    div[data-testid="stRadio"] label[data-checked="true"] {
+        background: #f0f7ff !important;
     }
     </style>""", unsafe_allow_html=True)
-
-    # 숨김 채널 — JS 클릭 → Python on_change 트리거
-    st.text_input("", key="_ac_channel", placeholder="__DART_AC__",
-                  label_visibility="collapsed", on_change=_on_ac_channel_change)
 
     ac_results: list[dict] = st.session_state.get("_ac_results", [])
 
@@ -1919,80 +1936,31 @@ def main() -> None:
             label_visibility="collapsed",
             on_change=_on_query_change,
         )
-        # 자동완성 드롭다운 — Naver 검색 스타일
+        # 자동완성 드롭다운 — st.radio 기반 (네이티브 Streamlit 클릭 처리)
         if ac_results:
-            import json as _json
-            _items = [
-                {"corp_code": c["corp_code"],
-                 "corp_name": c["corp_name"],
-                 "stock_code": c.get("stock_code", "")}
-                for c in ac_results
-            ]
-            _h = len(_items) * 46 + 4
-            components.html(
-                f"""<!doctype html>
-<html><head><meta charset="utf-8"><style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;
-      background:transparent}}
-.wrap{{border:1px solid #d0d0d0;border-top:none;border-radius:0 0 6px 6px;
-       background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.08);overflow:hidden}}
-.item{{display:flex;align-items:center;padding:10px 14px;cursor:pointer;
-       border-bottom:1px solid #f2f2f2;gap:10px}}
-.item:last-child{{border-bottom:none}}
-.item:hover{{background:#f8f8f8}}
-.ico-search{{flex-shrink:0;color:#aaa}}
-.name{{flex:1;font-size:14px;color:#202020;letter-spacing:-.3px}}
-.code{{font-size:12px;color:#999;flex-shrink:0}}
-.ico-arr{{flex-shrink:0;color:#ccc}}
-</style></head><body>
-<div class="wrap" id="W"></div>
-<script>
-(function(){{
-  var items={_json.dumps(_items, ensure_ascii=False)};
-  var wrap=document.getElementById('W');
-  items.forEach(function(it){{
-    var d=document.createElement('div');
-    d.className='item';
-    d.innerHTML=
-      '<svg class="ico-search" width="15" height="15" viewBox="0 0 24 24" fill="none"'
-      +' stroke="currentColor" stroke-width="2.2" stroke-linecap="round">'
-      +'<circle cx="11" cy="11" r="7"/><line x1="19.5" y1="19.5" x2="15.5" y2="15.5"/></svg>'
-      +'<span class="name">'+it.corp_name+'</span>'
-      +'<span class="code">'+(it.stock_code||'비상장')+'</span>'
-      +'<svg class="ico-arr" width="14" height="14" viewBox="0 0 24 24" fill="none"'
-      +' stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-      +'<line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>';
-    d.addEventListener('click',function(){{
-      try{{
-        var p=window.parent.document;
-        /* 숨김 채널 인풋에 corp_code 기록 → Streamlit on_change 트리거 */
-        var ch=p.querySelector('input[placeholder="__DART_AC__"]');
-        if(ch){{
-          var setter=Object.getOwnPropertyDescriptor(
-            window.parent.HTMLInputElement.prototype,'value').set;
-          setter.call(ch,it.corp_code);
-          ch.dispatchEvent(new Event('input',{{bubbles:true}}));
-          ch.dispatchEvent(new Event('change',{{bubbles:true}}));
-          ch.focus();ch.blur();
-        }}
-        /* 폴백: 검색 버튼도 클릭 */
-        var btns=p.querySelectorAll('button');
-        for(var i=0;i<btns.length;i++){{
-          if(btns[i].innerText&&btns[i].innerText.includes('검색')){{
-            btns[i].click();return;
-          }}
-        }}
-      }}catch(e){{console.warn(e)}}
-    }});
-    wrap.appendChild(d);
-  }});
-}})();
-</script>
-</body></html>""",
-                height=_h,
-                scrolling=False,
+            _name_map = {c["corp_code"]: c for c in ac_results}
+            _codes    = [c["corp_code"] for c in ac_results]
+
+            def _fmt_ac(code: str) -> str:
+                c     = _name_map.get(code, {})
+                stock = c.get("stock_code", "") or "비상장"
+                name  = c.get("corp_name", "")
+                # 돋보기 아이콘 + 이름 + 종목코드(우측)
+                pad = "　" * max(1, 18 - len(name))   # 전각 공백으로 우측 정렬 근사
+                return f"🔍  {name}{pad}{stock}"
+
+            sel = st.radio(
+                "", _codes,
+                format_func=_fmt_ac,
+                key="ac_radio",
+                index=None,
+                label_visibility="collapsed",
             )
+            if sel and sel in _name_map:
+                st.session_state["selected_corp"] = _name_map[sel]
+                st.session_state["_ac_results"]   = []
+                st.rerun()
+
     with col_btn:
         if st.button("🔍 검색", use_container_width=True, key="search_btn"):
             _run_search(st.session_state.get("_search_input", ""))
