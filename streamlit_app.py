@@ -1453,23 +1453,31 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
             if per_pbr:
                 # 연도 키(4자리)를 정수 정렬 후 오늘 날짜는 맨 끝에
                 today_key = datetime.now().strftime("%Y-%m-%d")
+                # 캐시된 날짜 키(오래된 날짜)를 실행 시점의 오늘 날짜로 갱신
+                def _is_year_key(k):
+                    return len(k) == 4 and k.isdigit()
+                stale_date_keys = [k for k in list(per_pbr.keys())
+                                   if not _is_year_key(k) and k != today_key]
+                for _old_k in stale_date_keys:
+                    per_pbr[today_key] = per_pbr.pop(_old_k)
                 hist_keys = sorted(
-                    [k for k in per_pbr if k != today_key],
+                    [k for k in per_pbr if _is_year_key(k)],
                     key=lambda k: int(k)
                 )
-                years_pp = hist_keys + ([today_key] if today_key in per_pbr else [])
+                date_keys_sorted = sorted([k for k in per_pbr if not _is_year_key(k)])
+                years_pp = hist_keys + date_keys_sorted
                 per_vals = [per_pbr[y].get("PER") for y in years_pp]
                 pbr_vals = [per_pbr[y].get("PBR") for y in years_pp]
 
-                # 오늘 포인트 강조 (빨간 마커)
+                # 오늘 포인트 강조 (빨간 마커) — 날짜 형식 키를 오늘 포인트로 처리
                 per_marker = dict(
-                    size=[9 if y == today_key else 5 for y in years_pp],
-                    color=[COLORS["red"] if y == today_key else COLORS["blue"]
+                    size=[9 if not _is_year_key(y) else 5 for y in years_pp],
+                    color=[COLORS["red"] if not _is_year_key(y) else COLORS["blue"]
                            for y in years_pp],
                 )
                 pbr_marker = dict(
-                    size=[9 if y == today_key else 5 for y in years_pp],
-                    color=[COLORS["red"] if y == today_key else COLORS["orange"]
+                    size=[9 if not _is_year_key(y) else 5 for y in years_pp],
+                    color=[COLORS["red"] if not _is_year_key(y) else COLORS["orange"]
                            for y in years_pp],
                 )
 
@@ -1772,8 +1780,11 @@ def main():
     # 탭 1 : 주식
     # ────────────────────────────────────────
     with tab_stock:
-        render_stock_chart(corp.get("stock_code", ""), corp["corp_name"],
-                           ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""))
+        try:
+            render_stock_chart(corp.get("stock_code", ""), corp["corp_name"],
+                               ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""))
+        except Exception as _e:
+            st.error(f"주식 차트 로딩 오류: {_e}")
 
     # ────────────────────────────────────────
     # 탭 2 : 재무제표
