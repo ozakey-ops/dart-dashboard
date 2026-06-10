@@ -11,6 +11,7 @@
 # ══════════════════════════════════════════
 import io
 import os
+import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -519,7 +520,6 @@ def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_news(company_name: str, count: int = 15) -> list[dict]:
     try:
-        import urllib.parse
         query = urllib.parse.quote(company_name)
         url   = f"https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
         r     = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
@@ -648,6 +648,21 @@ def fetch_major_shareholder_history(corp_code: str, _ver: int = _CACHE_VER) -> l
     return []
 
 
+def _safe_int(v: str) -> int | None:
+    s = (v or "").replace(",", "").strip()
+    try:
+        return int(s) if s else None
+    except ValueError:
+        return None
+
+
+def _safe_float(v: str) -> float | None:
+    try:
+        return float(v or 0) or None
+    except (ValueError, TypeError):
+        return None
+
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CACHE_VER) -> list[dict]:
     if not corp_code:
@@ -663,17 +678,6 @@ def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CA
             return []
         rows = []
         for item in sorted(data.get("list") or [], key=lambda x: x.get("rcept_dt", ""), reverse=True)[:count]:
-            def _safe_int(v: str) -> int | None:
-                s = (v or "").replace(",", "").strip()
-                try:
-                    return int(s) if s else None
-                except ValueError:
-                    return None
-            def _safe_float(v: str) -> float | None:
-                try:
-                    return float(v or 0) or None
-                except (ValueError, TypeError):
-                    return None
             rows.append({
                 "rcept_dt":    item.get("rcept_dt", ""),
                 "rcept_no":    item.get("rcept_no", ""),
@@ -837,10 +841,13 @@ def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
         if resolved is None:
             return []
         ticker, _ = resolved
+        _today = datetime.now()
         cfg = {
             "6mo":   dict(period="6mo",  interval="1d"),
             "24mo":  dict(period="2y",   interval="1d"),
-            "36mo":  dict(period="3y",   interval="1d"),
+            # period="3y"는 yfinance에서 빈 데이터를 반환하는 경우가 있어 start/end 명시
+            "36mo":  dict(start=(_today - timedelta(days=1097)).strftime("%Y-%m-%d"),
+                         end=_today.strftime("%Y-%m-%d"), interval="1d"),
             "month": dict(period="10y",  interval="1mo"),
             "year":  dict(period="max",  interval="3mo"),
         }
@@ -1495,35 +1502,9 @@ def render_stock_chart(stock_code: str, corp_name: str,
 
     # 서브섹션 렌더링
     if corp_code:
-        yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_CACHE_VER)
-        if "__error__" not in yf_data:
-            _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
-            mktcap = yf_data.get("mktcap", {})
-            if mktcap:
-                cur_yr_str = str(datetime.now().year)
-                years_mc   = sorted(mktcap.keys())
-                vals_mc    = [mktcap[y] for y in years_mc]
-                bar_colors = [COLORS["orange"] if y == cur_yr_str else COLORS["blue"]
-                              for y in years_mc]
-                fig_mc = go.Figure(go.Bar(
-                    x=years_mc, y=vals_mc, marker_color=bar_colors,
-                    text=[f"{v:,}" for v in vals_mc],
-                    textposition="outside", textfont=dict(size=9, color="#64748b"),
-                ))
-                fig_mc.update_layout(
-                    **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "xaxis")},
-                    xaxis=dict(type="category", gridcolor="#e2e8f0",
-                               tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
-                    yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
-                               tickfont=dict(color="#64748b")),
-                )
-                st.plotly_chart(fig_mc, use_container_width=True)
-            else:
-                st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
-
+        yf_data = _render_mktcap_chart(stock_code, corp_cls, corp_code)
+        if yf_data and "__error__" not in yf_data:
             _render_per_pbr_chart(yf_data)
-        else:
-            st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
 
         _render_shareholder_section(corp_code)
         _render_large_holdings(corp_code)
@@ -1819,6 +1800,55 @@ def _render_employee_tab(corp: dict) -> None:
 
 
 # ══════════════════════════════════════════
+#  검색 헬퍼 (main 외부 — 모듈 레벨)
+# ══════════════════════════════════════════
+
+def _run_search(q: str) -> None:
+    """검색 실행 — session_state에 결과 저장."""
+    q = (q or "").strip()
+    if not q:
+        return
+    try:
+        corps = load_corp_list()
+        results = search_corps(q, corps)[:10]
+    except Exception:
+        results = []
+    exact = [c for c in results if c["corp_name"] == q]
+    if exact:
+        st.session_state["selected_corp"]  = exact[0]
+        st.session_state["_ac_results"]    = []
+    elif len(results) == 1:
+        st.session_state["selected_corp"]  = results[0]
+        st.session_state["_ac_results"]    = []
+    elif results:
+        st.session_state["_ac_results"]    = results
+        st.session_state["selected_corp"]  = None
+    else:
+        st.session_state["_ac_results"]    = []
+        st.session_state["_ac_no_result"]  = q
+
+
+def _on_query_change() -> None:
+    q = st.session_state.get("_search_input", "").strip()
+    st.session_state["_ac_no_result"] = ""
+    if q:
+        _run_search(q)
+    else:
+        st.session_state["_ac_results"] = []
+
+
+def _make_fmt_ac(name_map: dict):
+    """자동완성 라디오용 format_func 생성 (클로저)."""
+    def _fmt(code: str) -> str:
+        c     = name_map.get(code, {})
+        stock = c.get("stock_code", "") or "비상장"
+        name  = c.get("corp_name", "")
+        pad   = "　" * max(1, 18 - len(name))
+        return f"\U0001f50d  {name}{pad}{stock}"
+    return _fmt
+
+
+# ══════════════════════════════════════════
 #  메인 UI
 # ══════════════════════════════════════════
 
@@ -1847,40 +1877,6 @@ def main() -> None:
       </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # ── 검색창 ──
-    def _run_search(q: str) -> None:
-        """검색 실행 — session_state에 결과 저장."""
-        q = (q or "").strip()
-        if not q:
-            return
-        try:
-            corps = load_corp_list()
-            results = search_corps(q, corps)[:10]
-        except Exception:
-            results = []
-        # 정확히 이름이 일치하는 법인이 있으면 바로 선택 (자동완성 클릭 포함)
-        exact = [c for c in results if c["corp_name"] == q]
-        if exact:
-            st.session_state["selected_corp"]  = exact[0]
-            st.session_state["_ac_results"]    = []
-        elif len(results) == 1:
-            st.session_state["selected_corp"]  = results[0]
-            st.session_state["_ac_results"]    = []
-        elif results:
-            st.session_state["_ac_results"]    = results
-            st.session_state["selected_corp"]  = None
-        else:
-            st.session_state["_ac_results"]    = []
-            st.session_state["_ac_no_result"]  = q
-
-    def _on_query_change() -> None:
-        q = st.session_state.get("_search_input", "").strip()
-        st.session_state["_ac_no_result"] = ""
-        if q:
-            _run_search(q)
-        else:
-            st.session_state["_ac_results"] = []
 
     # 검색창 기본 CSS (AC 라디오는 JS 스코핑으로 별도 처리)
     st.markdown("""
@@ -1931,19 +1927,12 @@ def main() -> None:
             _name_map = {c["corp_code"]: c for c in ac_results}
             _codes    = [c["corp_code"] for c in ac_results]
 
-            def _fmt_ac(code: str) -> str:
-                c     = _name_map.get(code, {})
-                stock = c.get("stock_code", "") or "비상장"
-                name  = c.get("corp_name", "")
-                pad   = "　" * max(1, 18 - len(name))
-                return f"🔍  {name}{pad}{stock}"
-
             # 센티넬 — JS가 바로 다음 stRadio를 찾아 #dart-ac-drop ID 부여
             st.markdown('<div id="dart-ac-sentinel" style="height:0;overflow:hidden;"></div>',
                         unsafe_allow_html=True)
             sel = st.radio(
                 "", _codes,
-                format_func=_fmt_ac,
+                format_func=_make_fmt_ac(_name_map),
                 key="ac_radio",
                 index=None,
                 label_visibility="collapsed",
