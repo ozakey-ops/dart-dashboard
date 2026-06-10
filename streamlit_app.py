@@ -1859,8 +1859,12 @@ def main() -> None:
             results = search_corps(q, corps)[:10]
         except Exception:
             results = []
-        if len(results) == 1:
-            # 단일 결과 → 바로 선택
+        # 정확히 이름이 일치하는 법인이 있으면 바로 선택 (자동완성 클릭 포함)
+        exact = [c for c in results if c["corp_name"] == q]
+        if exact:
+            st.session_state["selected_corp"]  = exact[0]
+            st.session_state["_ac_results"]    = []
+        elif len(results) == 1:
             st.session_state["selected_corp"]  = results[0]
             st.session_state["_ac_results"]    = []
         elif results:
