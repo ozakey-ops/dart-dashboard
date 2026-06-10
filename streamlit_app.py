@@ -33,11 +33,6 @@ try:
 except ImportError:
     _YF_AVAILABLE = False
 
-try:
-    from streamlit_searchbox import st_searchbox
-    _SEARCHBOX_AVAILABLE = True
-except ImportError:
-    _SEARCHBOX_AVAILABLE = False
 
 # ══════════════════════════════════════════
 #  설정 상수
@@ -317,7 +312,12 @@ def search_corps(query: str, all_corps: list[dict]) -> list[dict]:
         matches = exact if exact else partial
     if not matches:
         return []
-    matches.sort(key=lambda c: (c["corp_name"].lower() != ql, not bool(c["stock_code"]), c["corp_name"]))
+    matches.sort(key=lambda c: (
+        c["corp_name"].lower() != ql,                                     # 정확히 일치 먼저
+        not bool(c["stock_code"]),                                        # 상장 기업 먼저
+        -(int(c["corp_code"]) if c["corp_code"].isdigit() else 0),        # 최신 등록 법인 먼저
+        c["corp_name"],
+    ))
     return matches[:20]
 
 
@@ -1848,79 +1848,74 @@ def main() -> None:
     """, unsafe_allow_html=True)
 
     # ── 검색창 ──
-    def _ac_search(query: str) -> list[str]:
-        """자동완성 검색 함수 — 입력값에 매칭되는 회사 목록 반환."""
-        if not query or not query.strip():
-            return []
+    def _run_search(q: str) -> None:
+        """검색 실행 — session_state에 결과 저장."""
+        q = (q or "").strip()
+        if not q:
+            return
         try:
             corps = load_corp_list()
+            results = search_corps(q, corps)[:10]
         except Exception:
-            return []
-        results = search_corps(query.strip(), corps)[:15]
-        mapping: dict[str, dict] = {}
-        labels: list[str] = []
-        for c in results:
-            stock = f" [{c['stock_code']}]" if c["stock_code"] else " [비상장]"
-            label = f"{c['corp_name']}{stock}"
-            labels.append(label)
-            mapping[label] = c
-        st.session_state["_ac_map"] = mapping
-        return labels
+            results = []
+        if len(results) == 1:
+            # 단일 결과 → 바로 선택
+            st.session_state["selected_corp"]  = results[0]
+            st.session_state["_ac_results"]    = []
+        elif results:
+            st.session_state["_ac_results"]    = results
+            st.session_state["selected_corp"]  = None
+        else:
+            st.session_state["_ac_results"]    = []
+            st.session_state["_ac_no_result"]  = q
 
-    if _SEARCHBOX_AVAILABLE:
-        # streamlit-searchbox: 타이핑 즉시 자동완성 드롭다운 표시
+    def _on_query_change() -> None:
+        q = st.session_state.get("_search_input", "").strip()
+        st.session_state["_ac_no_result"] = ""
+        if q:
+            _run_search(q)
+        else:
+            st.session_state["_ac_results"] = []
+
+    # 검색 입력창
+    st.markdown("""
+    <style>
+    div[data-testid="stTextInput"] input { font-size: 1rem !important; }
+    </style>""", unsafe_allow_html=True)
+
+    col_inp, col_btn = st.columns([5, 1])
+    with col_inp:
+        st.text_input(
+            "",
+            placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
+            key="_search_input",
+            label_visibility="collapsed",
+            on_change=_on_query_change,
+        )
+    with col_btn:
+        if st.button("🔍 검색", use_container_width=True):
+            _run_search(st.session_state.get("_search_input", ""))
+
+    # 자동완성 결과 드롭다운
+    ac_results: list[dict] = st.session_state.get("_ac_results", [])
+    if ac_results:
         st.markdown(
-            '<style>[data-testid="stSearchBox"] { width:100%; }</style>',
+            '<div style="border:1px solid #e2e8f0;border-radius:10px;'
+            'overflow:hidden;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,.08);">',
             unsafe_allow_html=True,
         )
-        selected_label = st_searchbox(
-            _ac_search,
-            key="corp_searchbox",
-            placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
-            label="",
-            clear_on_submit=False,
-            rerun_on_update=True,
-        )
-        if selected_label:
-            found = st.session_state.get("_ac_map", {}).get(selected_label)
-            if found:
-                st.session_state["selected_corp"] = found
-    else:
-        # fallback: Enter / 버튼 제출 방식
-        with st.form("search_form"):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                query = st.text_input(
-                    "", placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, samsung, 005930)",
-                    label_visibility="collapsed", key="query",
-                )
-            with col2:
-                search_btn = st.form_submit_button("🔍 검색")
-        if search_btn and query:
-            try:
-                all_corps = load_corp_list()
-                results   = search_corps(query.strip(), all_corps)
-                if len(results) == 1:
-                    st.session_state["selected_corp"] = results[0]
-                elif results:
-                    # 여러 결과 → 바로 아래 selectbox로 처리
-                    st.session_state["_fallback_results"] = results
-                    st.session_state["selected_corp"]     = None
-                else:
-                    st.warning(f"'{query}' 검색 결과가 없습니다.")
-            except Exception as e:
-                st.error(f"기업 목록을 불러올 수 없습니다: {e}")
-                return
-        # 다중 결과 selectbox (fallback 전용)
-        if st.session_state.get("_fallback_results") and not st.session_state.get("selected_corp"):
-            fb = st.session_state["_fallback_results"]
-            options = [
-                f"{c['corp_name']}  {'[상장:'+c['stock_code']+']' if c['stock_code'] else '[비상장]'}  ({c['corp_code']})"
-                for c in fb
-            ]
-            sel_idx = st.selectbox("검색 결과에서 선택하세요", range(len(options)),
-                                   format_func=lambda i: options[i], key="corp_select")
-            st.session_state["selected_corp"] = fb[sel_idx]
+        for corp in ac_results:
+            stock = f"[{corp['stock_code']}]" if corp["stock_code"] else "[비상장]"
+            label = f"{corp['corp_name']}  {stock}"
+            if st.button(label, key=f"ac_{corp['corp_code']}", use_container_width=True):
+                st.session_state["selected_corp"] = corp
+                st.session_state["_ac_results"]   = []
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    no_result_q = st.session_state.get("_ac_no_result", "")
+    if no_result_q:
+        st.warning(f"'{no_result_q}' 검색 결과가 없습니다.")
 
     # 아직 아무 기업도 선택되지 않은 경우 → 안내 화면
     corp = st.session_state.get("selected_corp")
