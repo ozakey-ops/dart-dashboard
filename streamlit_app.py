@@ -24,6 +24,7 @@ from typing import Any
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
 try:
@@ -1894,17 +1895,80 @@ def main() -> None:
             label_visibility="collapsed",
             on_change=_on_query_change,
         )
-        # 검색창과 동일 너비로 결과 목록 표시
+        # 자동완성 드롭다운 — Naver 검색 스타일
         if ac_results:
-            for corp in ac_results:
-                stock = f"[{corp['stock_code']}]" if corp["stock_code"] else "[비상장]"
-                label = f"{corp['corp_name']}  {stock}"
-                if st.button(label, key=f"ac_{corp['corp_code']}", use_container_width=True):
-                    st.session_state["selected_corp"] = corp
-                    st.session_state["_ac_results"]   = []
-                    st.rerun()
+            import json as _json
+            _items = [
+                {"corp_code": c["corp_code"],
+                 "corp_name": c["corp_name"],
+                 "stock_code": c.get("stock_code", "")}
+                for c in ac_results
+            ]
+            _h = len(_items) * 46 + 4
+            components.html(
+                f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;
+      background:transparent}}
+.wrap{{border:1px solid #d0d0d0;border-top:none;border-radius:0 0 6px 6px;
+       background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.08);overflow:hidden}}
+.item{{display:flex;align-items:center;padding:10px 14px;cursor:pointer;
+       border-bottom:1px solid #f2f2f2;gap:10px}}
+.item:last-child{{border-bottom:none}}
+.item:hover{{background:#f8f8f8}}
+.ico-search{{flex-shrink:0;color:#aaa}}
+.name{{flex:1;font-size:14px;color:#202020;letter-spacing:-.3px}}
+.code{{font-size:12px;color:#999;flex-shrink:0}}
+.ico-arr{{flex-shrink:0;color:#ccc}}
+</style></head><body>
+<div class="wrap" id="W"></div>
+<script>
+(function(){{
+  var items={_json.dumps(_items, ensure_ascii=False)};
+  var wrap=document.getElementById('W');
+  items.forEach(function(it){{
+    var d=document.createElement('div');
+    d.className='item';
+    d.innerHTML=
+      '<svg class="ico-search" width="15" height="15" viewBox="0 0 24 24" fill="none"'
+      +' stroke="currentColor" stroke-width="2.2" stroke-linecap="round">'
+      +'<circle cx="11" cy="11" r="7"/><line x1="19.5" y1="19.5" x2="15.5" y2="15.5"/></svg>'
+      +'<span class="name">'+it.corp_name+'</span>'
+      +'<span class="code">'+(it.stock_code||'비상장')+'</span>'
+      +'<svg class="ico-arr" width="14" height="14" viewBox="0 0 24 24" fill="none"'
+      +' stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      +'<line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>';
+    d.addEventListener('click',function(){{
+      try{{
+        var p=window.parent.document;
+        /* 1. 검색창에 회사명 채우기 */
+        var inp=p.querySelector('input[placeholder*="회사명"]');
+        if(inp){{
+          var setter=Object.getOwnPropertyDescriptor(
+            window.parent.HTMLInputElement.prototype,'value').set;
+          setter.call(inp,it.corp_name);
+          inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+        }}
+        /* 2. 검색 버튼 클릭 */
+        var btns=p.querySelectorAll('button');
+        for(var i=0;i<btns.length;i++){{
+          if(btns[i].innerText&&btns[i].innerText.includes('검색')){{
+            btns[i].click();return;
+          }}
+        }}
+      }}catch(e){{console.warn(e)}}
+    }});
+    wrap.appendChild(d);
+  }});
+}})();
+</script>
+</body></html>""",
+                height=_h,
+                scrolling=False,
+            )
     with col_btn:
-        if st.button("🔍 검색", use_container_width=True):
+        if st.button("🔍 검색", use_container_width=True, key="search_btn"):
             _run_search(st.session_state.get("_search_input", ""))
 
     no_result_q = st.session_state.get("_ac_no_result", "")
