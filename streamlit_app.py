@@ -808,14 +808,34 @@ def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
 #  주가 데이터 (yfinance)
 # ══════════════════════════════════════════
 
+def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
+    """corp_cls 에 맞는 거래소 접미사를 시도하고, 데이터가 없으면 반대 거래소도 시도.
+    DART가 corp_cls='E'(기타)로 잘못 분류한 KOSPI/KOSDAQ 종목에 대응.
+    반환: (ticker, suffix) or None
+    """
+    primary   = ".KQ" if corp_cls == "K" else ".KS"
+    secondary = ".KS" if primary == ".KQ" else ".KQ"
+    for suffix in (primary, secondary):
+        ticker = f"{stock_code}{suffix}"
+        try:
+            hist = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True)
+            if not hist.empty:
+                return ticker, suffix
+        except Exception:
+            continue
+    return None
+
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
                       timeframe: str = "6mo", _ver: int = _CACHE_VER) -> list[dict]:
     if not _YF_AVAILABLE or not stock_code:
         return []
     try:
-        suffix  = ".KQ" if corp_cls == "K" else ".KS"
-        ticker  = f"{stock_code}{suffix}"
+        resolved = _resolve_ticker(stock_code, corp_cls)
+        if resolved is None:
+            return []
+        ticker, _ = resolved
         cfg = {
             "6mo":   dict(period="6mo",  interval="1d"),
             "24mo":  dict(period="2y",   interval="1d"),
@@ -866,8 +886,11 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
     if not _YF_AVAILABLE or not stock_code:
         return {"__error__": "yfinance 없음"}
     try:
-        suffix = ".KQ" if corp_cls == "K" else ".KS"
-        t      = yf.Ticker(f"{stock_code}{suffix}")
+        resolved = _resolve_ticker(stock_code, corp_cls)
+        if resolved is None:
+            return {"__error__": "주가 데이터 없음 (KS/KQ 모두 시도)"}
+        actual_ticker, _ = resolved
+        t = yf.Ticker(actual_ticker)
 
         shares: int | None = None
         try:
