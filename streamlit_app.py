@@ -647,6 +647,67 @@ def fetch_major_shareholder_history(corp_code: str, _ver: int = _CACHE_VER) -> l
     return []
 
 
+def _is_year_key(k: str) -> bool:
+    """4자리 연도 키 여부 판별 (PER/PBR 차트용)."""
+    return len(k) == 4 and k.isdigit()
+
+
+def _sal_fmt(v: int | None) -> str:
+    """연봉 단위 변환 (원 → 만원 문자열)."""
+    return f'{round((v or 0) / 10_000):,}만원' if v else "-"
+
+
+def _to_man(v: int | None) -> int:
+    """원 → 만원 변환."""
+    return round((v or 0) / 10_000)
+
+
+def _stock_info_cell(lbl: str, val: str, color: str = "#475569") -> str:
+    """주가 정보 바 셀 HTML."""
+    return (
+        f'<span style="margin-right:12px;white-space:nowrap;">'
+        f'<span style="font-size:.65rem;color:#94a3b8;">{lbl} </span>'
+        f'<span style="font-size:.82rem;font-weight:600;color:{color};">{val}</span>'
+        f'</span>'
+    )
+
+
+def _fx_card_item(label: str, value: float | None,
+                  chg: float | None, unit: str = "", num_fmt: str = ".1f") -> str:
+    """환율·금리 카드 셀 HTML."""
+    if value is None:
+        return ""
+    if chg is not None and chg != 0:
+        sym_c    = "▲" if chg > 0 else "▼"
+        color    = "#dc2626" if chg > 0 else "#2563eb"
+        chg_html = (f'<span style="font-size:.62rem;color:{color};margin-left:3px;">'
+                    f'{sym_c}{abs(chg):{num_fmt}}</span>')
+    else:
+        chg_html = ""
+    val_str = f"{value:,.3f}" if num_fmt == ".3f" else (
+        f"{value:,.2f}" if num_fmt == ".2f" else f"{value:,.1f}"
+    )
+    unit_html = (f'<span style="font-size:.65rem;font-weight:400;color:#94a3b8;margin-left:2px;">{unit}</span>'
+                 if unit else "")
+    return (
+        f'<div style="flex:1;min-width:45%;text-align:center;padding:8px 6px;">'
+        f'<div style="font-size:.65rem;color:#64748b;margin-bottom:2px;white-space:nowrap;">{label}</div>'
+        f'<div style="font-size:.95rem;font-weight:700;color:#1e293b;white-space:nowrap;">'
+        f'{val_str}{chg_html}{unit_html}</div>'
+        f'</div>'
+    )
+
+
+def _get_yf_val(df_T, idx, keys: list[str]) -> float | None:
+    """yfinance DataFrame에서 첫 번째 유효 키 값 반환."""
+    for k in keys:
+        if k in df_T.columns:
+            v = df_T.loc[idx, k]
+            if pd.notna(v):
+                return float(v)
+    return None
+
+
 def _safe_int(v: str) -> int | None:
     s = (v or "").replace(",", "").strip()
     try:
@@ -984,24 +1045,16 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                     EQ_KEYS = ["Stockholders Equity", "Common Stock Equity",
                                "Total Equity Gross Minority Interest"]
 
-                    def _get_yf(df_T: pd.DataFrame, idx, keys: list[str]) -> float | None:
-                        for k in keys:
-                            if k in df_T.columns:
-                                v = df_T.loc[idx, k]
-                                if pd.notna(v):
-                                    return float(v)
-                        return None
-
                     for idx_date in fin_T.index:
                         yr    = idx_date.year
                         close = year_closes.get(yr)
                         if close is None or not shares or shares <= 0:
                             continue
-                        ni = _get_yf(fin_T, idx_date, NI_KEYS)
+                        ni = _get_yf_val(fin_T, idx_date, NI_KEYS)
                         eq = None
                         if not bs_T.empty:
                             closest = min(bs_T.index, key=lambda d: abs((d - idx_date).days))
-                            eq = _get_yf(bs_T, closest, EQ_KEYS)
+                            eq = _get_yf_val(bs_T, closest, EQ_KEYS)
                         per = round(close / (ni / shares), 1) if (ni and ni > 0) else None
                         pbr = round(close / (eq / shares), 2) if (eq and eq > 0) else None
                         if per is not None or pbr is not None:
@@ -1138,9 +1191,6 @@ def _render_per_pbr_chart(yf_data: dict) -> None:
         return
 
     today_key = datetime.now().strftime("%Y-%m-%d")
-
-    def _is_year_key(k: str) -> bool:
-        return len(k) == 4 and k.isdigit()
 
     # 오래된 날짜 키를 오늘 날짜 키로 갱신
     for stale in [k for k in list(per_pbr.keys()) if not _is_year_key(k) and k != today_key]:
@@ -1412,23 +1462,15 @@ def render_stock_chart(stock_code: str, corp_name: str,
         clr        = "#dc2626" if chg_val >= 0 else "#2563eb"
         sym        = "▲" if chg_val > 0 else ("▼" if chg_val < 0 else "━")
 
-        def ic(lbl: str, val: str, color: str = "#475569") -> str:
-            return (
-                f'<span style="margin-right:12px;white-space:nowrap;">'
-                f'<span style="font-size:.65rem;color:#94a3b8;">{lbl} </span>'
-                f'<span style="font-size:.82rem;font-weight:600;color:{color};">{val}</span>'
-                f'</span>'
-            )
-
         info_cells = (
-              ic("시가",   f"{last['open']:,.0f}")
-            + ic("고가",   f"{last['high']:,.0f}", "#dc2626")
-            + ic("저가",   f"{last['low']:,.0f}",  "#2563eb")
-            + ic("종가",   f"{last['close']:,.0f}")
-            + ic("대비",   f"{sym}{abs(int(chg_val)):,}", clr)
-            + ic("등락률", f"{sym}{abs(chg_pct):.2f}%", clr)
-            + ic("거래량", f"{last['volume']:,.0f}")
-            + ic("거래대금", f"{turnover:,.0f}억")
+              _stock_info_cell("시가",   f"{last['open']:,.0f}")
+            + _stock_info_cell("고가",   f"{last['high']:,.0f}", "#dc2626")
+            + _stock_info_cell("저가",   f"{last['low']:,.0f}",  "#2563eb")
+            + _stock_info_cell("종가",   f"{last['close']:,.0f}")
+            + _stock_info_cell("대비",   f"{sym}{abs(int(chg_val)):,}", clr)
+            + _stock_info_cell("등락률", f"{sym}{abs(chg_pct):.2f}%", clr)
+            + _stock_info_cell("거래량", f"{last['volume']:,.0f}")
+            + _stock_info_cell("거래대금", f"{turnover:,.0f}억")
         )
         st.markdown(
             f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
@@ -1758,9 +1800,6 @@ def _render_employee_tab(corp: dict) -> None:
     sal_years = [y for y in eyears
                  if emp_data[y].get("salary_m") or emp_data[y].get("salary_f")]
     if sal_years:
-        def _to_man(v: int | None) -> int:
-            return round((v or 0) / 10_000)
-
         fig_sal = go.Figure()
         for sex, color, label in [("m", "#2563eb", "남"), ("f", "#ec4899", "여")]:
             vals = [_to_man(emp_data[y].get(f"salary_{sex}")) for y in sal_years]
@@ -1777,9 +1816,6 @@ def _render_employee_tab(corp: dict) -> None:
         st.plotly_chart(fig_sal, use_container_width=True)
 
     # 데이터 테이블
-    def _sal_fmt(v: int | None) -> str:
-        return f'{round((v or 0) / 10_000):,}만원' if v else "-"
-
     tbl_rows = [
         {
             "연도": y,
@@ -1927,39 +1963,14 @@ def main() -> None:
     # 환율 + 미국채 카드
     md = fetch_market_data()
     if md and md.get("usd_krw"):
-        def fx_item(label: str, value: float | None,
-                    chg: float | None, unit: str = "", num_fmt: str = ".1f") -> str:
-            """환율 카드 셀 — num_fmt 파라미터명으로 전역 fmt() 함수 충돌 방지."""
-            if value is None:
-                return ""
-            if chg is not None and chg != 0:
-                sym_c    = "▲" if chg > 0 else "▼"
-                color    = "#dc2626" if chg > 0 else "#2563eb"
-                chg_html = (f'<span style="font-size:.62rem;color:{color};margin-left:3px;">'
-                            f'{sym_c}{abs(chg):{num_fmt}}</span>')
-            else:
-                chg_html = ""
-            val_str  = f"{value:,.3f}" if num_fmt == ".3f" else (
-                f"{value:,.2f}" if num_fmt == ".2f" else f"{value:,.1f}"
-            )
-            unit_html = (f'<span style="font-size:.65rem;font-weight:400;color:#94a3b8;margin-left:2px;">{unit}</span>'
-                         if unit else "")
-            return (
-                f'<div style="flex:1;min-width:45%;text-align:center;padding:8px 6px;">'
-                f'<div style="font-size:.65rem;color:#64748b;margin-bottom:2px;white-space:nowrap;">{label}</div>'
-                f'<div style="font-size:.95rem;font-weight:700;color:#1e293b;white-space:nowrap;">'
-                f'{val_str}{chg_html}{unit_html}</div>'
-                f'</div>'
-            )
-
         st.markdown(
             f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
             f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 4px 2px;margin:0 0 12px 0;">'
             f'<div style="display:flex;flex-wrap:wrap;align-items:center;">'
-            + fx_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
-            + fx_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
-            + fx_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
-            + fx_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
+            + _fx_card_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
+            + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
+            + _fx_card_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
+            + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
             + f'</div>'
             f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;padding:0 8px 4px;">'
             f'기준일 {md["date"]}</div>'
@@ -1991,4 +2002,7 @@ def main() -> None:
         _render_employee_tab(corp)
 
 
-# ══════════�
+
+# ══════════════════════════════════════════
+if __name__ == "__main__":
+    main()
