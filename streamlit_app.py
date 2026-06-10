@@ -1797,15 +1797,16 @@ def main() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    # 검색창
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        query = st.text_input(
-            "", placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, samsung, 005930)",
-            label_visibility="collapsed", key="query",
-        )
-    with col2:
-        search_btn = st.button("🔍 검색")
+    # 검색창 — st.form 으로 감싸면 Enter 키 / 버튼 클릭 모두 제출됨
+    with st.form("search_form"):
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            query = st.text_input(
+                "", placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, samsung, 005930)",
+                label_visibility="collapsed", key="query",
+            )
+        with col2:
+            search_btn = st.form_submit_button("🔍 검색")
 
     if search_btn and query:
         st.session_state["search_query"] = query
