@@ -25,7 +25,6 @@ from typing import Any
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from plotly.subplots import make_subplots
 
 try:
@@ -1800,52 +1799,25 @@ def _render_employee_tab(corp: dict) -> None:
 
 
 # ══════════════════════════════════════════
-#  검색 헬퍼 (main 외부 — 모듈 레벨)
+#  검색 헬퍼
 # ══════════════════════════════════════════
 
 def _run_search(q: str) -> None:
-    """검색 실행 — session_state에 결과 저장."""
+    """검색 실행 — 가장 일치하는 법인을 session_state에 저장."""
     q = (q or "").strip()
     if not q:
         return
     try:
         corps = load_corp_list()
-        results = search_corps(q, corps)[:10]
+        results = search_corps(q, corps)
     except Exception:
         results = []
-    exact = [c for c in results if c["corp_name"] == q]
-    if exact:
-        st.session_state["selected_corp"]  = exact[0]
-        st.session_state["_ac_results"]    = []
-    elif len(results) == 1:
-        st.session_state["selected_corp"]  = results[0]
-        st.session_state["_ac_results"]    = []
-    elif results:
-        st.session_state["_ac_results"]    = results
-        st.session_state["selected_corp"]  = None
+    if results:
+        st.session_state["selected_corp"]   = results[0]
+        st.session_state["_search_no_result"] = ""
     else:
-        st.session_state["_ac_results"]    = []
-        st.session_state["_ac_no_result"]  = q
-
-
-def _on_query_change() -> None:
-    q = st.session_state.get("_search_input", "").strip()
-    st.session_state["_ac_no_result"] = ""
-    if q:
-        _run_search(q)
-    else:
-        st.session_state["_ac_results"] = []
-
-
-def _make_fmt_ac(name_map: dict):
-    """자동완성 라디오용 format_func 생성 (클로저)."""
-    def _fmt(code: str) -> str:
-        c     = name_map.get(code, {})
-        stock = c.get("stock_code", "") or "비상장"
-        name  = c.get("corp_name", "")
-        pad   = "　" * max(1, 18 - len(name))
-        return f"\U0001f50d  {name}{pad}{stock}"
-    return _fmt
+        st.session_state["selected_corp"]   = None
+        st.session_state["_search_no_result"] = q
 
 
 # ══════════════════════════════════════════
@@ -1878,41 +1850,6 @@ def main() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    # 검색창 기본 CSS (AC 라디오는 JS 스코핑으로 별도 처리)
-    st.markdown("""
-    <style>
-    div[data-testid="stTextInput"] input { font-size: 1rem !important; }
-    /* AC 드롭다운 전용 스타일 — JS가 #dart-ac-drop ID를 부여한 후 적용 */
-    #dart-ac-drop { margin-top: -4px !important; }
-    #dart-ac-drop > div {
-        border: 1px solid #d0d0d0 !important;
-        border-top: none !important;
-        border-radius: 0 0 8px 8px !important;
-        overflow: hidden !important;
-        box-shadow: 0 4px 10px rgba(0,0,0,.08) !important;
-        gap: 0 !important;
-    }
-    #dart-ac-drop > label { display: none !important; }
-    #dart-ac-drop label > div:first-child { display: none !important; }
-    #dart-ac-drop label {
-        display: flex !important;
-        align-items: center !important;
-        padding: 10px 14px !important;
-        border-bottom: 1px solid #f2f2f2 !important;
-        margin: 0 !important;
-        background: white !important;
-        cursor: pointer !important;
-        font-size: 14px !important;
-        color: #202020 !important;
-        font-weight: 400 !important;
-        letter-spacing: -.3px !important;
-    }
-    #dart-ac-drop label:last-of-type { border-bottom: none !important; }
-    #dart-ac-drop label:hover { background: #f8f8f8 !important; }
-    </style>""", unsafe_allow_html=True)
-
-    ac_results: list[dict] = st.session_state.get("_ac_results", [])
-
     col_inp, col_btn = st.columns([5, 1])
     with col_inp:
         st.text_input(
@@ -1920,55 +1857,12 @@ def main() -> None:
             placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
             key="_search_input",
             label_visibility="collapsed",
-            on_change=_on_query_change,
         )
-        # 자동완성 드롭다운 — st.radio 기반 (네이티브 Streamlit 클릭 처리)
-        if ac_results:
-            _name_map = {c["corp_code"]: c for c in ac_results}
-            _codes    = [c["corp_code"] for c in ac_results]
-
-            # 센티넬 — JS가 바로 다음 stRadio를 찾아 #dart-ac-drop ID 부여
-            st.markdown('<div id="dart-ac-sentinel" style="height:0;overflow:hidden;"></div>',
-                        unsafe_allow_html=True)
-            sel = st.radio(
-                "", _codes,
-                format_func=_make_fmt_ac(_name_map),
-                key="ac_radio",
-                index=None,
-                label_visibility="collapsed",
-            )
-            # JS: 센티넬 다음 stRadio에만 ID 적용 (기간 라디오 등 다른 위젯 영향 없음)
-            components.html("""<script>
-(function(){
-  var p=window.parent.document;
-  function tag(){
-    var s=p.getElementById('dart-ac-sentinel');
-    if(!s)return;
-    var mc=s.closest('[data-testid="stMarkdown"]')||s.parentElement;
-    var el=mc;
-    while((el=el.nextElementSibling)){
-      var r=el.querySelector('[data-testid="stRadio"]')||
-            (el.getAttribute&&el.getAttribute('data-testid')==='stRadio'?el:null);
-      if(r){r.id='dart-ac-drop';break;}
-    }
-  }
-  [50,200,500,1200].forEach(function(t){setTimeout(tag,t);});
-  new MutationObserver(tag).observe(p.body,{childList:true,subtree:true});
-})();
-</script>""", height=0, scrolling=False)
-
-            if sel and sel in _name_map:
-                chosen = _name_map[sel]
-                st.session_state["selected_corp"]  = chosen
-                st.session_state["_ac_results"]    = []
-                st.session_state["_search_input"]  = chosen["corp_name"]  # 검색창 값 업데이트
-                st.rerun()
-
     with col_btn:
         if st.button("🔍 검색", use_container_width=True, key="search_btn"):
             _run_search(st.session_state.get("_search_input", ""))
 
-    no_result_q = st.session_state.get("_ac_no_result", "")
+    no_result_q = st.session_state.get("_search_no_result", "")
     if no_result_q:
         st.warning(f"'{no_result_q}' 검색 결과가 없습니다.")
 
