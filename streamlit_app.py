@@ -1802,6 +1802,10 @@ def _render_employee_tab(corp: dict) -> None:
 #  검색 헬퍼
 # ══════════════════════════════════════════
 
+def _on_search_enter() -> None:
+    _run_search(st.session_state.get("_search_input", ""))
+
+
 def _run_search(q: str) -> None:
     """검색 실행 — 가장 일치하는 법인을 session_state에 저장."""
     q = (q or "").strip()
@@ -1857,6 +1861,7 @@ def main() -> None:
             placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
             key="_search_input",
             label_visibility="collapsed",
+            on_change=_on_search_enter,
         )
     with col_btn:
         if st.button("🔍 검색", use_container_width=True, key="search_btn"):
@@ -1986,6 +1991,4 @@ def main() -> None:
         _render_employee_tab(corp)
 
 
-# ══════════════════════════════════════════
-if __name__ == "__main__":
-    main()
+# ══════════�
