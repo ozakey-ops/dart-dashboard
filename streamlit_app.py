@@ -1883,6 +1883,8 @@ def main() -> None:
     div[data-testid="stTextInput"] input { font-size: 1rem !important; }
     </style>""", unsafe_allow_html=True)
 
+    ac_results: list[dict] = st.session_state.get("_ac_results", [])
+
     col_inp, col_btn = st.columns([5, 1])
     with col_inp:
         st.text_input(
@@ -1892,26 +1894,18 @@ def main() -> None:
             label_visibility="collapsed",
             on_change=_on_query_change,
         )
+        # 검색창과 동일 너비로 결과 목록 표시
+        if ac_results:
+            for corp in ac_results:
+                stock = f"[{corp['stock_code']}]" if corp["stock_code"] else "[비상장]"
+                label = f"{corp['corp_name']}  {stock}"
+                if st.button(label, key=f"ac_{corp['corp_code']}", use_container_width=True):
+                    st.session_state["selected_corp"] = corp
+                    st.session_state["_ac_results"]   = []
+                    st.rerun()
     with col_btn:
         if st.button("🔍 검색", use_container_width=True):
             _run_search(st.session_state.get("_search_input", ""))
-
-    # 자동완성 결과 드롭다운
-    ac_results: list[dict] = st.session_state.get("_ac_results", [])
-    if ac_results:
-        st.markdown(
-            '<div style="border:1px solid #e2e8f0;border-radius:10px;'
-            'overflow:hidden;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,.08);">',
-            unsafe_allow_html=True,
-        )
-        for corp in ac_results:
-            stock = f"[{corp['stock_code']}]" if corp["stock_code"] else "[비상장]"
-            label = f"{corp['corp_name']}  {stock}"
-            if st.button(label, key=f"ac_{corp['corp_code']}", use_container_width=True):
-                st.session_state["selected_corp"] = corp
-                st.session_state["_ac_results"]   = []
-                st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
 
     no_result_q = st.session_state.get("_ac_no_result", "")
     if no_result_q:
