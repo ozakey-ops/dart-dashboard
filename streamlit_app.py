@@ -1177,6 +1177,138 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
 
     # ── 최대주주 현황 + 지분변동 공시 ──
     if corp_code:
+        # ─────────────────────────────────────────────
+        # ⑤ 연도별 시가총액 막대 차트
+        # ─────────────────────────────────────────────
+        _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
+        yf_data = fetch_yf_annual_data(stock_code, corp_cls,
+                                       corp_code=(corp_code or ""), _ver=_CACHE_VER)
+        if "__error__" in yf_data:
+            st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
+        else:
+            mktcap = yf_data.get("mktcap", {})
+            if mktcap:
+                cur_yr_str   = str(datetime.now().year)
+                years_mc     = sorted(mktcap.keys())
+                vals_mc      = [mktcap[y] for y in years_mc]
+                bar_colors   = [COLORS["orange"] if y == cur_yr_str else COLORS["blue"]
+                                for y in years_mc]
+                fig_mc = go.Figure(
+                    go.Bar(
+                        x=years_mc,
+                        y=vals_mc,
+                        marker_color=bar_colors,
+                        text=[f"{v:,}" for v in vals_mc],
+                        textposition="outside",
+                        textfont=dict(size=9, color="#64748b"),
+                    )
+                )
+                fig_mc.update_layout(
+                    **{k: v for k, v in PLOTLY_LAYOUT.items()
+                       if k not in ("yaxis", "xaxis")},
+                    xaxis=dict(
+                        type="category",
+                        gridcolor="#e2e8f0",
+                        tickfont=dict(color="#64748b"),
+                        linecolor="#e2e8f0",
+                    ),
+                    yaxis=dict(
+                        title="억 원",
+                        tickformat=",",
+                        gridcolor="#e2e8f0",
+                        tickfont=dict(color="#64748b"),
+                    ),
+                )
+                st.plotly_chart(fig_mc, use_container_width=True)
+            else:
+                st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
+
+        # ─────────────────────────────────────────────
+        # ⑥ PER / PBR 밸류에이션 추이 (이중 Y축)
+        # ─────────────────────────────────────────────
+        _section_header("PER / PBR 밸류에이션 추이", "연말 종가 기준 · 오늘: trailing 기준")
+        if "__error__" not in yf_data:
+            per_pbr = yf_data.get("per_pbr", {})
+            if per_pbr:
+                # 연도 키(4자리)를 정수 정렬 후 오늘 날짜는 맨 끝에
+                today_key = datetime.now().strftime("%Y-%m-%d")
+                # 캐시된 날짜 키(오래된 날짜)를 실행 시점의 오늘 날짜로 갱신
+                def _is_year_key(k):
+                    return len(k) == 4 and k.isdigit()
+                stale_date_keys = [k for k in list(per_pbr.keys())
+                                   if not _is_year_key(k) and k != today_key]
+                for _old_k in stale_date_keys:
+                    per_pbr[today_key] = per_pbr.pop(_old_k)
+                hist_keys = sorted(
+                    [k for k in per_pbr if _is_year_key(k)],
+                    key=lambda k: int(k)
+                )
+                date_keys_sorted = sorted([k for k in per_pbr if not _is_year_key(k)])
+                years_pp = hist_keys + date_keys_sorted
+                per_vals = [per_pbr[y].get("PER") for y in years_pp]
+                pbr_vals = [per_pbr[y].get("PBR") for y in years_pp]
+
+                # 오늘 포인트 강조 (빨간 마커) — 날짜 형식 키를 오늘 포인트로 처리
+                per_marker = dict(
+                    size=[9 if not _is_year_key(y) else 5 for y in years_pp],
+                    color=[COLORS["red"] if not _is_year_key(y) else COLORS["blue"]
+                           for y in years_pp],
+                )
+                pbr_marker = dict(
+                    size=[9 if not _is_year_key(y) else 5 for y in years_pp],
+                    color=[COLORS["red"] if not _is_year_key(y) else COLORS["orange"]
+                           for y in years_pp],
+                )
+
+                fig_vl = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_vl.add_trace(
+                    go.Scatter(
+                        x=years_pp, y=per_vals, name="PER",
+                        mode="lines+markers",
+                        line=dict(color=COLORS["blue"], width=2),
+                        marker=per_marker,
+                        connectgaps=True,
+                    ),
+                    secondary_y=False,
+                )
+                fig_vl.add_trace(
+                    go.Scatter(
+                        x=years_pp, y=pbr_vals, name="PBR",
+                        mode="lines+markers",
+                        line=dict(color=COLORS["orange"], width=2, dash="dot"),
+                        marker=pbr_marker,
+                        connectgaps=True,
+                    ),
+                    secondary_y=True,
+                )
+                fig_vl.update_layout(
+                    **{k: v for k, v in PLOTLY_LAYOUT.items()
+                       if k not in ("yaxis", "legend", "xaxis")},
+                    xaxis=dict(
+                        type="category",
+                        gridcolor="#e2e8f0",
+                        tickfont=dict(color="#64748b"),
+                        linecolor="#e2e8f0",
+                    ),
+                )
+                fig_vl.update_yaxes(
+                    title_text="PER (배)",
+                    ticksuffix="x",
+                    gridcolor="#e2e8f0",
+                    tickfont=dict(color="#64748b"),
+                    secondary_y=False,
+                )
+                fig_vl.update_yaxes(
+                    title_text="PBR (배)",
+                    ticksuffix="x",
+                    gridcolor="#e2e8f0",
+                    tickfont=dict(color="#64748b"),
+                    secondary_y=True,
+                )
+                st.plotly_chart(fig_vl, use_container_width=True)
+            else:
+                st.caption("PER/PBR 계산에 필요한 재무데이터(순이익, 자본총계)를 가져올 수 없습니다.")
+
         # ① 최대주주 현황 테이블
         with st.spinner("최대주주 데이터 조회 중..."):
             shareholders = fetch_major_shareholders(corp_code)
@@ -1398,137 +1530,6 @@ def render_stock_chart(stock_code, corp_name, corp_cls="Y", corp_code=None):
         else:
             st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
 
-        # ─────────────────────────────────────────────
-        # ⑤ 연도별 시가총액 막대 차트
-        # ─────────────────────────────────────────────
-        _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
-        yf_data = fetch_yf_annual_data(stock_code, corp_cls,
-                                       corp_code=(corp_code or ""), _ver=_CACHE_VER)
-        if "__error__" in yf_data:
-            st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
-        else:
-            mktcap = yf_data.get("mktcap", {})
-            if mktcap:
-                cur_yr_str   = str(datetime.now().year)
-                years_mc     = sorted(mktcap.keys())
-                vals_mc      = [mktcap[y] for y in years_mc]
-                bar_colors   = [COLORS["orange"] if y == cur_yr_str else COLORS["blue"]
-                                for y in years_mc]
-                fig_mc = go.Figure(
-                    go.Bar(
-                        x=years_mc,
-                        y=vals_mc,
-                        marker_color=bar_colors,
-                        text=[f"{v:,}" for v in vals_mc],
-                        textposition="outside",
-                        textfont=dict(size=9, color="#64748b"),
-                    )
-                )
-                fig_mc.update_layout(
-                    **{k: v for k, v in PLOTLY_LAYOUT.items()
-                       if k not in ("yaxis", "xaxis")},
-                    xaxis=dict(
-                        type="category",
-                        gridcolor="#e2e8f0",
-                        tickfont=dict(color="#64748b"),
-                        linecolor="#e2e8f0",
-                    ),
-                    yaxis=dict(
-                        title="억 원",
-                        tickformat=",",
-                        gridcolor="#e2e8f0",
-                        tickfont=dict(color="#64748b"),
-                    ),
-                )
-                st.plotly_chart(fig_mc, use_container_width=True)
-            else:
-                st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
-
-        # ─────────────────────────────────────────────
-        # ⑥ PER / PBR 밸류에이션 추이 (이중 Y축)
-        # ─────────────────────────────────────────────
-        _section_header("PER / PBR 밸류에이션 추이", "연말 종가 기준 · 오늘: trailing 기준")
-        if "__error__" not in yf_data:
-            per_pbr = yf_data.get("per_pbr", {})
-            if per_pbr:
-                # 연도 키(4자리)를 정수 정렬 후 오늘 날짜는 맨 끝에
-                today_key = datetime.now().strftime("%Y-%m-%d")
-                # 캐시된 날짜 키(오래된 날짜)를 실행 시점의 오늘 날짜로 갱신
-                def _is_year_key(k):
-                    return len(k) == 4 and k.isdigit()
-                stale_date_keys = [k for k in list(per_pbr.keys())
-                                   if not _is_year_key(k) and k != today_key]
-                for _old_k in stale_date_keys:
-                    per_pbr[today_key] = per_pbr.pop(_old_k)
-                hist_keys = sorted(
-                    [k for k in per_pbr if _is_year_key(k)],
-                    key=lambda k: int(k)
-                )
-                date_keys_sorted = sorted([k for k in per_pbr if not _is_year_key(k)])
-                years_pp = hist_keys + date_keys_sorted
-                per_vals = [per_pbr[y].get("PER") for y in years_pp]
-                pbr_vals = [per_pbr[y].get("PBR") for y in years_pp]
-
-                # 오늘 포인트 강조 (빨간 마커) — 날짜 형식 키를 오늘 포인트로 처리
-                per_marker = dict(
-                    size=[9 if not _is_year_key(y) else 5 for y in years_pp],
-                    color=[COLORS["red"] if not _is_year_key(y) else COLORS["blue"]
-                           for y in years_pp],
-                )
-                pbr_marker = dict(
-                    size=[9 if not _is_year_key(y) else 5 for y in years_pp],
-                    color=[COLORS["red"] if not _is_year_key(y) else COLORS["orange"]
-                           for y in years_pp],
-                )
-
-                fig_vl = make_subplots(specs=[[{"secondary_y": True}]])
-                fig_vl.add_trace(
-                    go.Scatter(
-                        x=years_pp, y=per_vals, name="PER",
-                        mode="lines+markers",
-                        line=dict(color=COLORS["blue"], width=2),
-                        marker=per_marker,
-                        connectgaps=True,
-                    ),
-                    secondary_y=False,
-                )
-                fig_vl.add_trace(
-                    go.Scatter(
-                        x=years_pp, y=pbr_vals, name="PBR",
-                        mode="lines+markers",
-                        line=dict(color=COLORS["orange"], width=2, dash="dot"),
-                        marker=pbr_marker,
-                        connectgaps=True,
-                    ),
-                    secondary_y=True,
-                )
-                fig_vl.update_layout(
-                    **{k: v for k, v in PLOTLY_LAYOUT.items()
-                       if k not in ("yaxis", "legend", "xaxis")},
-                    xaxis=dict(
-                        type="category",
-                        gridcolor="#e2e8f0",
-                        tickfont=dict(color="#64748b"),
-                        linecolor="#e2e8f0",
-                    ),
-                )
-                fig_vl.update_yaxes(
-                    title_text="PER (배)",
-                    ticksuffix="x",
-                    gridcolor="#e2e8f0",
-                    tickfont=dict(color="#64748b"),
-                    secondary_y=False,
-                )
-                fig_vl.update_yaxes(
-                    title_text="PBR (배)",
-                    ticksuffix="x",
-                    gridcolor="#e2e8f0",
-                    tickfont=dict(color="#64748b"),
-                    secondary_y=True,
-                )
-                st.plotly_chart(fig_vl, use_container_width=True)
-            else:
-                st.caption("PER/PBR 계산에 필요한 재무데이터(순이익, 자본총계)를 가져올 수 없습니다.")
 
 
 PLOTLY_LAYOUT = dict(
