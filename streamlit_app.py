@@ -1882,11 +1882,31 @@ def main() -> None:
         else:
             st.session_state["_ac_results"] = []
 
+    # 자동완성 항목 클릭 시 JS→Python 통신 채널
+    def _on_ac_channel_change() -> None:
+        corp_code = st.session_state.get("_ac_channel", "").strip()
+        if not corp_code:
+            return
+        for c in st.session_state.get("_ac_results", []):
+            if c["corp_code"] == corp_code:
+                st.session_state["selected_corp"] = c
+                st.session_state["_ac_results"]   = []
+                st.session_state["_ac_channel"]   = ""
+                break
+
     # 검색 입력창
     st.markdown("""
     <style>
     div[data-testid="stTextInput"] input { font-size: 1rem !important; }
+    /* 숨김 채널 인풋 */
+    [data-testid="stTextInput"]:has(input[placeholder="__DART_AC__"]) {
+        max-height:0;overflow:hidden;margin:0;padding:0;opacity:0;pointer-events:none;
+    }
     </style>""", unsafe_allow_html=True)
+
+    # 숨김 채널 — JS 클릭 → Python on_change 트리거
+    st.text_input("", key="_ac_channel", placeholder="__DART_AC__",
+                  label_visibility="collapsed", on_change=_on_ac_channel_change)
 
     ac_results: list[dict] = st.session_state.get("_ac_results", [])
 
@@ -1946,15 +1966,17 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Noto S
     d.addEventListener('click',function(){{
       try{{
         var p=window.parent.document;
-        /* 1. 검색창에 회사명 채우기 */
-        var inp=p.querySelector('input[placeholder*="회사명"]');
-        if(inp){{
+        /* 숨김 채널 인풋에 corp_code 기록 → Streamlit on_change 트리거 */
+        var ch=p.querySelector('input[placeholder="__DART_AC__"]');
+        if(ch){{
           var setter=Object.getOwnPropertyDescriptor(
             window.parent.HTMLInputElement.prototype,'value').set;
-          setter.call(inp,it.corp_name);
-          inp.dispatchEvent(new Event('input',{{bubbles:true}}));
+          setter.call(ch,it.corp_code);
+          ch.dispatchEvent(new Event('input',{{bubbles:true}}));
+          ch.dispatchEvent(new Event('change',{{bubbles:true}}));
+          ch.focus();ch.blur();
         }}
-        /* 2. 검색 버튼 클릭 */
+        /* 폴백: 검색 버튼도 클릭 */
         var btns=p.querySelectorAll('button');
         for(var i=0;i<btns.length;i++){{
           if(btns[i].innerText&&btns[i].innerText.includes('검색')){{
