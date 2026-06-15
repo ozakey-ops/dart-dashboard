@@ -75,22 +75,30 @@ ACC: dict[str, list[str]] = {
     # EBITDA 구성 요소 — 현금흐름표 영업활동 조정항목에서 추출
     # EBITDA = 영업이익(IS) + 감가상각비(D) + 무형자산상각비(A)
     "depreciation":     [
-        "감가상각비", "유형자산감가상각비", "감가상각및상각비",
-        "감가상각비및상각비", "유형자산의감가상각비",
+        # ── "~에 대한 조정" 형식 (DART CF 조정항목 — 구체적 표기 우선) ──
+        "감가상각비에 대한 조정",
+        "유형자산감가상각비에 대한 조정",
+        "사용권자산감가상각비에 대한 조정",
+        "유형자산및사용권자산감가상각비에 대한 조정",
+        # ── 직접 계정명 ──
+        "감가상각비", "유형자산감가상각비", "사용권자산감가상각비",
+        "유형자산및사용권자산감가상각비", "유형자산및사용권자산의감가상각비",
+        "사용권자산의감가상각비",   # ROU자산 감가 → 유형자산 범주
+        "유형자산의감가상각비", "유형자산상각비", "유형자산의상각비",
+        "감가상각비(유형자산)", "투자부동산감가상각비",
+        # ── 유·무형 통합 표기 (마지막 폴백) ──
+        "감가상각및상각비", "감가상각비및상각비",
         "유·무형자산상각비", "유무형자산상각비",
-        # IFRS 16 사용권자산 포함 통합 항목
-        "사용권자산감가상각비", "유형자산및사용권자산감가상각비",
-        "유형자산및사용권자산의감가상각비",
-        # 일부 기업 표기 변형
-        "유형자산상각비", "유형자산의상각비", "감가상각비(유형자산)",
-        "투자부동산감가상각비",
     ],
     "amortization":     [
-        "무형자산상각비", "무형자산의상각", "무형자산상각",
+        # ── "~에 대한 조정" 형식 ──
+        "무형자산상각비에 대한 조정",
+        "무형자산의상각에 대한 조정",
+        "사용권자산상각비에 대한 조정",
+        # ── 직접 계정명 (무형자산 한정) ──
+        "무형자산상각비", "무형자산의상각비", "무형자산의상각", "무형자산상각",
+        "개발비상각액", "개발비상각비",
         "사용권자산상각비",
-        # 추가 변형
-        "무형자산의상각비", "개발비상각액", "개발비상각비",
-        "사용권자산의감가상각비",
     ],
 }
 COLORS = {
@@ -174,12 +182,18 @@ st.markdown("""
 def clean(s: str) -> str:
     return (s or "").replace(" ", "")
 def parse_amt(item: dict) -> int | None:
-    try:
-        return round(int(item.get("thstrm_amount", "").replace(",", "")) / 1e8)
-    except Exception:
-        return None
+    """당기 금액 파싱 — thstrm_amount → thstrm_add_amount 순으로 시도."""
+    for field in ("thstrm_amount", "thstrm_add_amount"):
+        raw = (item.get(field) or "").replace(",", "").strip()
+        if raw and raw not in ("-", ""):
+            try:
+                return round(int(raw) / 1e8)
+            except (ValueError, TypeError):
+                continue
+    return None
 def find_amount(items: list[dict], keys: list[str]) -> int | None:
-    """계정과목 검색: 완전일치 → 양방향 포함 검색"""
+    """계정과목 검색: 완전일치 → 키워드⊂계정명 포함 검색.
+    nm in kc 방향(역방향)은 단어가 짧은 계정명이 긴 키워드에 잘못 매칭되는 오류 유발 → 제거."""
     for key in keys:
         kc = clean(key)
         for item in items:
@@ -191,7 +205,7 @@ def find_amount(items: list[dict], keys: list[str]) -> int | None:
         kc = clean(key)
         for item in items:
             nm = clean(item.get("account_nm", ""))
-            if kc in nm or nm in kc:
+            if kc in nm:          # 키워드가 계정명 안에 포함될 때만 매칭
                 v = parse_amt(item)
                 if v is not None:
                     return v
@@ -2233,14 +2247,17 @@ def main() -> None:
             f'</div>',
             unsafe_allow_html=True,
         )
-    # ══ 메인 탭 ══
+
     tab_stock, tab_sh, tab_fs, tab_news, tab_emp = st.tabs(
         ["📈 주식", "🏛 주주 현황", "📊 재무제표", "📢 공시 · 뉴스", "👥 직원 현황"]
     )
     with tab_stock:
         try:
             render_stock_chart(
-                ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""),
+                corp.get("stock_code", ""),
+                corp["corp_name"],
+                ov.get("corp_cls_raw", "Y"),
+                corp_code=corp.get("corp_code", ""),
             )
         except Exception as e:
             st.error(f"주식 차트 로딩 오류: {e}")
