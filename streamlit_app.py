@@ -255,10 +255,21 @@ def _section_header(title: str, sub: str = "") -> None:
 # ══════════════════════════════════════════
 #  DART API — 기업 목록
 # ══════════════════════════════════════════
+def _dart_get(path: str, params: dict, timeout: tuple = (10, 60)) -> requests.Response:
+    """DART API GET 래퍼 — SSL/연결 오류 시 verify=False 재시도."""
+    url = f"{BASE}/{path}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=True)
+    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
+        # Streamlit Cloud 등 해외 서버에서 한국 정부 인증서 검증 실패 시 재시도
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
+
 @st.cache_data(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
 def load_corp_list() -> list[dict]:
-    r = requests.get(f"{BASE}/corpCode.xml", params={"crtfc_key": DART_KEY},
-                     timeout=(10, 60))   # (connect, read) 분리
+    r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY})
     r.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         with z.open("CORPCODE.xml") as f:
