@@ -74,11 +74,24 @@ ACC: dict[str, list[str]] = {
                          "현금및현금성자산의기말잔액", "기말현금및현금성자산잔액"],
     # EBITDA 구성 요소 — 현금흐름표 영업활동 조정항목에서 추출
     # EBITDA = 영업이익(IS) + 감가상각비(D) + 무형자산상각비(A)
-    "depreciation":     ["감가상각비", "유형자산감가상각비", "감가상각및상각비",
-                         "감가상각비및상각비", "유형자산의감가상각비",
-                         "유·무형자산상각비", "유무형자산상각비"],
-    "amortization":     ["무형자산상각비", "무형자산의상각", "무형자산상각",
-                         "사용권자산상각비"],
+    "depreciation":     [
+        "감가상각비", "유형자산감가상각비", "감가상각및상각비",
+        "감가상각비및상각비", "유형자산의감가상각비",
+        "유·무형자산상각비", "유무형자산상각비",
+        # IFRS 16 사용권자산 포함 통합 항목
+        "사용권자산감가상각비", "유형자산및사용권자산감가상각비",
+        "유형자산및사용권자산의감가상각비",
+        # 일부 기업 표기 변형
+        "유형자산상각비", "유형자산의상각비", "감가상각비(유형자산)",
+        "투자부동산감가상각비",
+    ],
+    "amortization":     [
+        "무형자산상각비", "무형자산의상각", "무형자산상각",
+        "사용권자산상각비",
+        # 추가 변형
+        "무형자산의상각비", "개발비상각액", "개발비상각비",
+        "사용권자산의감가상각비",
+    ],
 }
 COLORS = {
     "blue":   "#2563eb",
@@ -629,8 +642,7 @@ def _fx_card_item(label: str, value: float | None,
                     f'{sym_c}{abs(chg):{num_fmt}}</span>')
     else:
         chg_html = ""
-    prec = num_fmt.lstrip(".")   # ".3f" → "3"
-    val_str = f"{value:,.{prec}f}"
+    val_str = f"{value:,{num_fmt}}"   # num_fmt = ".1f" → ":,.1f"
     unit_html = (f'<span style="font-size:.65rem;font-weight:400;color:#94a3b8;margin-left:2px;">{unit}</span>'
                  if unit else "")
     return (
@@ -1308,7 +1320,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
     if not stock_code:
         return
     period_labels = ["6달", "2년", "3년", "월봉", "연봉"]
-    sel = st.radio("기간", period_labels, horizontal=True,
+    sel = st.radio("기간", period_labels, index=2, horizontal=True,
                    key=f"sp_{stock_code}", label_visibility="collapsed")
     col_ma1, col_ma2 = st.columns(2)
     with col_ma1:
@@ -1580,18 +1592,16 @@ def _render_fs_tab(corp: dict) -> None:
                 if (op_v is not None or dep_v is not None or amt_v is not None)
                 else None
             )
-            row: dict[str, Any] = {
-                "연도":    y,
-                "영업CF":  fmt(c.get("opCF")),
-                "투자CF":  fmt(c.get("invCF")),
-                "재무CF":  fmt(c.get("finCF")),
-                "기말현금": fmt(c.get("endCash")),
-            }
-            if has_da:
-                row["감가상각비(D)"]     = fmt(dep_v)
-                row["무형자산상각비(A)"] = fmt(amt_v)
-                row["EBITDA"]            = fmt(ebitda_v)
-            rows.append(row)
+            rows.append({
+                "연도":          y,
+                "영업CF":        fmt(c.get("opCF")),
+                "투자CF":        fmt(c.get("invCF")),
+                "재무CF":        fmt(c.get("finCF")),
+                "기말현금":      fmt(c.get("endCash")),
+                "감가상각비(D)":     fmt(dep_v),
+                "무형자산상각비(A)": fmt(amt_v),
+                "EBITDA":        fmt(ebitda_v),
+            })
         st.dataframe(rows, hide_index=True, use_container_width=True)
 # ══════════════════════════════════════════
 #  공시·뉴스 탭
@@ -2230,7 +2240,6 @@ def main() -> None:
     with tab_stock:
         try:
             render_stock_chart(
-                corp.get("stock_code", ""), corp["corp_name"],
                 ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""),
             )
         except Exception as e:
@@ -2243,6 +2252,6 @@ def main() -> None:
         _render_news_tab(corp)
     with tab_emp:
         _render_employee_tab(corp)
-# ════════════════════════
+# ══════════════════════════════════════════
 if __name__ == "__main__":
     main()
