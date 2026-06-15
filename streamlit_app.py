@@ -2023,4 +2023,153 @@ def _run_search(q: str) -> None:
         st.session_state["_search_no_result"] = ""
     else:
         st.session_state["selected_corp"]   = None
-        st.session_state["_search_no_result"]
+        st.session_state["_search_no_result"] = q
+
+
+# ══════════════════════════════════════════
+#  메인 UI
+# ══════════════════════════════════════════
+
+def main() -> None:
+    if not DART_KEY:
+        st.error(
+            "DART API 키가 설정되지 않았습니다.\n\n"
+            "**로컬 실행:** `.streamlit/secrets.toml` 에 `DART_KEY = \"your_key\"` 추가\n\n"
+            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력"
+        )
+        st.stop()
+
+    # 스티키 헤더
+    st.markdown("""
+    <div style="position:sticky;top:0;z-index:999;
+                background:#fff;border-bottom:1px solid #e2e8f0;
+                box-shadow:0 1px 4px rgba(0,0,0,.06);
+                padding:14px 20px;margin:-1rem -1rem 1.2rem -1rem;
+                display:flex;align-items:center;gap:12px;">
+      <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;
+                  background:linear-gradient(135deg,#2563eb,#7c3aed);
+                  display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
+      <div>
+        <div style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">
+          기업 주식 시황 및 재무 대시보드</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 검색창 ──
+    col_inp, col_btn = st.columns([5, 1])
+    with col_inp:
+        st.text_input(
+            "",
+            placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
+            key="_search_input",
+            label_visibility="collapsed",
+            on_change=_on_search_enter,
+        )
+    with col_btn:
+        if st.button("🔍 검색", use_container_width=True, key="search_btn"):
+            _run_search(st.session_state.get("_search_input", ""))
+
+    no_result_q = st.session_state.get("_search_no_result", "")
+    if no_result_q:
+        st.warning(f"'{no_result_q}' 검색 결과가 없습니다.")
+
+    # 아직 아무 기업도 선택되지 않은 경우 → 안내 화면
+    corp = st.session_state.get("selected_corp")
+    if not corp:
+        st.markdown("""
+        <div style="text-align:center;padding:3rem;color:#768390;">
+          <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
+          <div>회사명 또는 종목코드를 입력하고 검색하세요</div>
+          <div style="font-size:.8rem;margin-top:.5rem;">K-IFRS 기준 최대 15년 재무제표를 불러옵니다</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # 기업 개요
+    with st.spinner("기업 정보 조회 중..."):
+        ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
+
+    cls_badge = (
+        f'<span style="background:#eff6ff;color:#2563eb;font-size:.68rem;'
+        f'border-radius:4px;padding:2px 7px;margin-left:8px;font-weight:600;">'
+        f'{ov.get("corp_cls","")}</span>'
+    ) if ov.get("corp_cls") else ""
+
+    meta_parts = []
+    if ov.get("ceo_nm"):  meta_parts.append(f'<span><b>대표</b> {ov["ceo_nm"]}</span>')
+    if ov.get("est_dt"):  meta_parts.append(f'<span><b>설립</b> {ov["est_dt"]}</span>')
+    if ov.get("acc_mt"):  meta_parts.append(f'<span><b>결산</b> {ov["acc_mt"]}</span>')
+    if ov.get("phn_no"):  meta_parts.append(f'<span><b>전화</b> {ov["phn_no"]}</span>')
+    sep       = '<span style="color:#94a3b8;margin:0 6px;">|</span>'
+    meta_html = sep.join(meta_parts)
+    addr_html = (f'<div style="font-size:.72rem;color:#64748b;margin-top:4px;">📍 {ov["adres"]}</div>'
+                 if ov.get("adres") else "")
+    url_html  = (f'<div style="font-size:.72rem;margin-top:2px;">🌐 '
+                 f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a></div>'
+                 ) if ov.get("hm_url") else ""
+
+    st.markdown(f"""
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+                box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:12px 0;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:{'8px' if meta_parts else '0'};">
+        <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
+                    padding:4px 12px;font-weight:700;color:#fff;flex-shrink:0;">
+          {corp['corp_name'][:2]}</div>
+        <div style="flex:1;">
+          <div style="font-weight:700;color:#1e293b;font-size:1.05rem;">{corp['corp_name']}{cls_badge}</div>
+          <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">
+            코드: {corp['corp_code']}
+            {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}</div>
+        </div>
+      </div>
+      {f'<div style="font-size:.78rem;color:#475569;margin-top:4px;">{meta_html}</div>' if meta_html else ''}
+      {addr_html}{url_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 환율 + 미국채 카드
+    md = fetch_market_data()
+    if md and md.get("usd_krw"):
+        st.markdown(
+            f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
+            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 4px 2px;margin:0 0 12px 0;">'
+            f'<div style="display:flex;flex-wrap:wrap;align-items:center;">'
+            + _fx_card_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
+            + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
+            + _fx_card_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
+            + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
+            + f'</div>'
+            f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;padding:0 8px 4px;">'
+            f'기준일 {md["date"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ══ 메인 탭 ══
+    tab_stock, tab_fs, tab_news, tab_emp = st.tabs(
+        ["📈 주식", "📊 재무제표", "📢 공시 · 뉴스", "👥 직원 현황"]
+    )
+
+    with tab_stock:
+        try:
+            render_stock_chart(
+                corp.get("stock_code", ""), corp["corp_name"],
+                ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""),
+            )
+        except Exception as e:
+            st.error(f"주식 차트 로딩 오류: {e}")
+
+    with tab_fs:
+        _render_fs_tab(corp)
+
+    with tab_news:
+        _render_news_tab(corp)
+
+    with tab_emp:
+        _render_employee_tab(corp)
+
+
+# ══════════════════════════════════════════
+if __name__ == "__main__":
+    main()
