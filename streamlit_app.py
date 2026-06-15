@@ -5,6 +5,7 @@
 실행:  streamlit run streamlit_app.py
 배포:  share.streamlit.io (무료)
 """
+
 # ══════════════════════════════════════════
 #  표준 라이브러리 imports
 # ══════════════════════════════════════════
@@ -17,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
+
 # ══════════════════════════════════════════
 #  서드파티 imports
 # ══════════════════════════════════════════
@@ -24,12 +26,15 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 from plotly.subplots import make_subplots
+
 try:
     import yfinance as yf
     import pandas as pd
     _YF_AVAILABLE = True
 except ImportError:
     _YF_AVAILABLE = False
+
+
 # ══════════════════════════════════════════
 #  설정 상수
 # ══════════════════════════════════════════
@@ -37,17 +42,21 @@ try:
     DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", ""))
 except Exception:
     DART_KEY = os.environ.get("DART_KEY", "")
+
 BASE         = "https://opendart.fss.or.kr/api"
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
+
 # 캐시 TTL 상수 (초)
 TTL_REALTIME  = 300      # 5분  — 시장 데이터
 TTL_SHORT     = 1800     # 30분 — 공시·뉴스·대량보유
 TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
+
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
 _CACHE_VER = 21
+
 # 계정과목 키워드 매핑
 ACC: dict[str, list[str]] = {
     "assets":      ["자산총계"],
@@ -72,14 +81,8 @@ ACC: dict[str, list[str]] = {
     "finCF":            ["재무활동으로 인한 현금흐름", "재무활동현금흐름"],
     "endCash":          ["기말현금및현금성자산", "기말의현금및현금성자산",
                          "현금및현금성자산의기말잔액", "기말현금및현금성자산잔액"],
-    # EBITDA 구성 요소 — 현금흐름표 영업활동 조정항목에서 추출
-    # EBITDA = 영업이익(IS) + 감가상각비(D) + 무형자산상각비(A)
-    "depreciation":     ["감가상각비", "유형자산감가상각비", "감가상각및상각비",
-                         "감가상각비및상각비", "유형자산의감가상각비",
-                         "유·무형자산상각비", "유무형자산상각비"],
-    "amortization":     ["무형자산상각비", "무형자산의상각", "무형자산상각",
-                         "사용권자산상각비"],
 }
+
 COLORS = {
     "blue":   "#2563eb",
     "red":    "#dc2626",
@@ -87,6 +90,7 @@ COLORS = {
     "orange": "#ea580c",
     "purple": "#7c3aed",
 }
+
 # Plotly 공통 레이아웃 — render_stock_chart 보다 먼저 선언
 PLOTLY_LAYOUT: dict[str, Any] = dict(
     paper_bgcolor="rgba(0,0,0,0)",
@@ -98,6 +102,7 @@ PLOTLY_LAYOUT: dict[str, Any] = dict(
     margin=dict(l=10, r=10, t=30, b=10),
     height=280,
 )
+
 # ─── 페이지 설정 ───
 st.set_page_config(
     page_title="기업 주식 시황 및 재무 대시보드",
@@ -105,6 +110,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
 st.markdown("""
 <style>
   [data-testid="stHeader"]           { display:none !important; }
@@ -155,16 +161,23 @@ st.markdown("""
   }
 </style>
 """, unsafe_allow_html=True)
+
+
 # ══════════════════════════════════════════
 #  유틸리티
 # ══════════════════════════════════════════
+
 def clean(s: str) -> str:
     return (s or "").replace(" ", "")
+
+
 def parse_amt(item: dict) -> int | None:
     try:
         return round(int(item.get("thstrm_amount", "").replace(",", "")) / 1e8)
     except Exception:
         return None
+
+
 def find_amount(items: list[dict], keys: list[str]) -> int | None:
     """계정과목 검색: 완전일치 → 양방향 포함 검색"""
     for key in keys:
@@ -183,6 +196,8 @@ def find_amount(items: list[dict], keys: list[str]) -> int | None:
                 if v is not None:
                     return v
     return None
+
+
 def find_retained_earnings(bs_items: list[dict]) -> int | None:
     r = find_amount(bs_items, ACC["retainedEarnings"])
     if r is not None:
@@ -200,6 +215,8 @@ def find_retained_earnings(bs_items: list[dict]) -> int | None:
             if v is not None:
                 return v
     return None
+
+
 def find_end_cash(cf_items: list[dict]) -> int | None:
     r = find_amount(cf_items, ACC["endCash"])
     if r is not None:
@@ -218,14 +235,20 @@ def find_end_cash(cf_items: list[dict]) -> int | None:
             if v is not None:
                 candidates.append(v)
     return candidates[-1] if candidates else None
+
+
 def fmt(n: int | float | None) -> str:
     if n is None:
         return "-"
     return f"{int(n):,}"
+
+
 def pct(a: int | None, b: int | None) -> float | None:
     if a is None or b is None or b == 0:
         return None
     return round(a / b * 100, 1)
+
+
 def _html_table(headers: list[str], rows_html: str, align: list[str] | None = None) -> str:
     """공통 HTML 테이블 렌더러 — 반복되는 테이블 마크업을 하나로 통합."""
     if align is None:
@@ -242,6 +265,8 @@ def _html_table(headers: list[str], rows_html: str, align: list[str] | None = No
         f'<tbody>{rows_html}</tbody>'
         f'</table></div>'
     )
+
+
 def _section_header(title: str, sub: str = "") -> None:
     sub_html = (
         f'<span style="font-size:.68rem;font-weight:400;color:#94a3b8;margin-left:6px;">{sub}</span>'
@@ -252,24 +277,15 @@ def _section_header(title: str, sub: str = "") -> None:
         f'{title}{sub_html}</div>',
         unsafe_allow_html=True,
     )
+
+
 # ══════════════════════════════════════════
 #  DART API — 기업 목록
 # ══════════════════════════════════════════
-def _dart_get(path: str, params: dict, timeout: tuple = (10, 60)) -> requests.Response:
-    """DART API GET 래퍼 — SSL/연결 오류 시 verify=False 재시도."""
-    url = f"{BASE}/{path}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=True)
-    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
-        # Streamlit Cloud 등 해외 서버에서 한국 정부 인증서 검증 실패 시 재시도
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
 
-@st.cache_data(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
+@st.cache_data(ttl=TTL_WEEKLY, show_spinner=False)
 def load_corp_list() -> list[dict]:
-    r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY})
+    r = requests.get(f"{BASE}/corpCode.xml", params={"crtfc_key": DART_KEY}, timeout=30)
     r.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         with z.open("CORPCODE.xml") as f:
@@ -283,6 +299,8 @@ def load_corp_list() -> list[dict]:
         if code and name:
             corps.append({"corp_code": code, "corp_name": name, "stock_code": stock})
     return corps
+
+
 def search_corps(query: str, all_corps: list[dict]) -> list[dict]:
     q  = query.strip()
     ql = q.lower()
@@ -302,9 +320,12 @@ def search_corps(query: str, all_corps: list[dict]) -> list[dict]:
         c["corp_name"],
     ))
     return matches[:20]
+
+
 # ══════════════════════════════════════════
 #  DART API — 재무 데이터
 # ══════════════════════════════════════════
+
 @st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
 def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
     try:
@@ -339,31 +360,36 @@ def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
                 "invCF":   find_amount(cf, ACC["invCF"]),
                 "finCF":   find_amount(cf, ACC["finCF"]),
                 "endCash": find_end_cash(cf),
-                # EBITDA 구성: 영업활동CF 조정항목에서 D&A 추출
-                "depre":   find_amount(cf, ACC["depreciation"]),
-                "amort":   find_amount(cf, ACC["amortization"]),
             },
         }
         has_data = any(v is not None for sec in result.values() for v in sec.values())
         return result if has_data else None
     except Exception:
         return None
+
+
 @st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
 def fetch_all_years(corp_code: str, fs_div: str, _ver: int = _CACHE_VER) -> dict:
     """연도별 재무데이터를 ThreadPoolExecutor로 병렬 조회 (순차 대비 최대 5× 빠름)."""
     all_data: dict[str, dict] = {}
+
     def _fetch(year: int) -> tuple[int, dict | None]:
         return year, fetch_year(corp_code, year, fs_div)
+
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(_fetch, year): year for year in YEARS}
         for future in as_completed(futures):
             year, data = future.result()
             if data:
                 all_data[str(year)] = data
+
     return all_data
+
+
 # ══════════════════════════════════════════
 #  DART API — 기업 개요
 # ══════════════════════════════════════════
+
 @st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
     result = {}
@@ -389,9 +415,12 @@ def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
     except Exception:
         pass
     return result
+
+
 # ══════════════════════════════════════════
 #  시장 데이터 (환율 + 미국채)
 # ══════════════════════════════════════════
+
 @st.cache_data(ttl=TTL_REALTIME, show_spinner=False)
 def fetch_market_data() -> dict:
     if not _YF_AVAILABLE:
@@ -414,6 +443,7 @@ def fetch_market_data() -> dict:
             prev  = round(float(hist.loc[dates[-2], "Close"]) * mul, nd) if len(dates) >= 2 else None
             chg   = round(cur - prev, nd) if prev is not None else None
             raw[sym] = {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
+
         ref_date = raw.get("USDKRW=X", {}).get("date", "")
         return {
             "usd_krw":        raw.get("USDKRW=X", {}).get("value"),
@@ -428,9 +458,12 @@ def fetch_market_data() -> dict:
         }
     except Exception:
         return {}
+
+
 # ══════════════════════════════════════════
 #  DART API — 공시
 # ══════════════════════════════════════════
+
 def _parse_disc_list(items: list[dict], count: int) -> list[dict]:
     result = []
     for item in items[:count]:
@@ -448,6 +481,8 @@ def _parse_disc_list(items: list[dict], count: int) -> list[dict]:
             "link":      link,
         })
     return result
+
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]:
     end_de = datetime.now().strftime("%Y%m%d")
@@ -475,9 +510,12 @@ def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]
         except Exception as e:
             last_err = str(e)
     return [], last_err or "공시 조회 실패"
+
+
 # ══════════════════════════════════════════
 #  뉴스
 # ══════════════════════════════════════════
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_news(company_name: str, count: int = 15) -> list[dict]:
     try:
@@ -503,13 +541,18 @@ def fetch_news(company_name: str, count: int = 15) -> list[dict]:
         return news
     except Exception:
         return []
+
+
 # ══════════════════════════════════════════
 #  DART API — 주주·임원 현황
 # ══════════════════════════════════════════
+
 _REPRT_CANDIDATES = (
     [(y, "11011") for y in range(datetime.now().year - 1, datetime.now().year - 6, -1)] +
     [(y, "11012") for y in range(datetime.now().year - 1, datetime.now().year - 4, -1)]
 )
+
+
 @st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
 def fetch_major_shareholders(corp_code: str, _ver: int = _CACHE_VER) -> list[dict]:
     if not corp_code:
@@ -554,6 +597,8 @@ def fetch_major_shareholders(corp_code: str, _ver: int = _CACHE_VER) -> list[dic
         except Exception:
             continue
     return []
+
+
 @st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
 def fetch_major_shareholder_history(corp_code: str, _ver: int = _CACHE_VER) -> list[dict]:
     if not corp_code:
@@ -600,15 +645,23 @@ def fetch_major_shareholder_history(corp_code: str, _ver: int = _CACHE_VER) -> l
         except Exception:
             continue
     return []
+
+
 def _is_year_key(k: str) -> bool:
     """4자리 연도 키 여부 판별 (PER/PBR 차트용)."""
     return len(k) == 4 and k.isdigit()
+
+
 def _sal_fmt(v: int | None) -> str:
     """연봉 단위 변환 (원 → 만원 문자열)."""
     return f'{round((v or 0) / 10_000):,}만원' if v else "-"
+
+
 def _to_man(v: int | None) -> int:
     """원 → 만원 변환."""
     return round((v or 0) / 10_000)
+
+
 def _stock_info_cell(lbl: str, val: str, color: str = "#475569") -> str:
     """주가 정보 바 셀 HTML."""
     return (
@@ -617,6 +670,8 @@ def _stock_info_cell(lbl: str, val: str, color: str = "#475569") -> str:
         f'<span style="font-size:.82rem;font-weight:600;color:{color};">{val}</span>'
         f'</span>'
     )
+
+
 def _fx_card_item(label: str, value: float | None,
                   chg: float | None, unit: str = "", num_fmt: str = ".1f") -> str:
     """환율·금리 카드 셀 HTML."""
@@ -629,8 +684,9 @@ def _fx_card_item(label: str, value: float | None,
                     f'{sym_c}{abs(chg):{num_fmt}}</span>')
     else:
         chg_html = ""
-    prec = num_fmt.lstrip(".")   # ".3f" → "3"
-    val_str = f"{value:,.{prec}f}"
+    val_str = f"{value:,.3f}" if num_fmt == ".3f" else (
+        f"{value:,.2f}" if num_fmt == ".2f" else f"{value:,.1f}"
+    )
     unit_html = (f'<span style="font-size:.65rem;font-weight:400;color:#94a3b8;margin-left:2px;">{unit}</span>'
                  if unit else "")
     return (
@@ -640,6 +696,8 @@ def _fx_card_item(label: str, value: float | None,
         f'{val_str}{chg_html}{unit_html}</div>'
         f'</div>'
     )
+
+
 def _get_yf_val(df_T, idx, keys: list[str]) -> float | None:
     """yfinance DataFrame에서 첫 번째 유효 키 값 반환."""
     for k in keys:
@@ -648,20 +706,26 @@ def _get_yf_val(df_T, idx, keys: list[str]) -> float | None:
             if pd.notna(v):
                 return float(v)
     return None
+
+
 def _safe_int(v: str) -> int | None:
     s = (v or "").replace(",", "").strip()
     try:
         return int(s) if s else None
     except ValueError:
         return None
+
+
 def _safe_float(v: str) -> float | None:
     try:
         return float(v or 0) or None
     except (ValueError, TypeError):
         return None
+
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CACHE_VER) -> list[dict]:
-    if not DART_KEY or not corp_code:
+    if not corp_code:
         return []
     try:
         r = requests.get(
@@ -688,9 +752,11 @@ def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CA
         return rows
     except Exception:
         return []
+
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_executive_stock_reports(corp_code: str, count: int = 30, _ver: int = _CACHE_VER) -> list[dict]:
-    if not DART_KEY or not corp_code:
+    if not DART_KEY:
         return []
     try:
         r = requests.get(
@@ -701,14 +767,14 @@ def fetch_executive_stock_reports(corp_code: str, count: int = 30, _ver: int = _
         data = r.json()
         if data.get("status") != "000":
             return []
-        rows = []
+        results = []
         for item in (data.get("list") or []):
             irds_raw = (item.get("sp_stock_lmp_irds_cnt") or "0").replace(",", "")
             try:
                 irds = int(irds_raw)
             except ValueError:
                 irds = 0
-            rows.append({
+            results.append({
                 "rcept_no": item.get("rcept_no", ""),
                 "rcept_dt": item.get("rcept_dt", ""),
                 "repror":   (item.get("repror") or "").strip(),
@@ -718,13 +784,16 @@ def fetch_executive_stock_reports(corp_code: str, count: int = 30, _ver: int = _
                 "irds":     irds,
                 "irds_raw": item.get("sp_stock_lmp_irds_cnt", "0"),
             })
-        rows.sort(key=lambda x: x["rcept_dt"], reverse=True)
-        return rows[:count]
+        results.sort(key=lambda x: x["rcept_dt"], reverse=True)
+        return results[:count]
     except Exception:
         return []
+
+
 # ══════════════════════════════════════════
 #  DART API — 직원 현황
 # ══════════════════════════════════════════
+
 def _emp_parse_int(v: str) -> int:
     s = (v or "").strip()
     if not s or s == "-":
@@ -733,6 +802,8 @@ def _emp_parse_int(v: str) -> int:
         return int(s.replace(",", ""))
     except ValueError:
         return 0
+
+
 def _emp_parse_float(v: str) -> float:
     s = (v or "").strip()
     if not s or s == "-":
@@ -741,25 +812,23 @@ def _emp_parse_float(v: str) -> float:
         return float(s.replace(",", ""))
     except ValueError:
         return 0.0
+
+
 def _emp_parse_salary(v: str) -> int | None:
     s = (v or "").strip().replace(",", "")
     if not s or s == "-" or not s.isdigit():
         return None
     val = int(s)
     return val if val > 0 else None
-def _emp_pick_agg(items: list[dict], sex: str) -> dict | None:
-    """성별(남/여) 기준 대표 행 선택 — 합계 행 우선, 없으면 sm 최대 행."""
-    rows = [x for x in items if (x.get("sexdstn") or "").strip() == sex]
-    if not rows:
-        return None
-    agg = [x for x in rows if "합계" in (x.get("fo_bbm") or "")]
-    return agg[0] if agg else max(rows, key=lambda x: _emp_parse_int(x.get("sm")))
+
+
 @st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
 def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
     if not DART_KEY:
         return {}
-
-    def _fetch_emp_year(year: int) -> tuple[int, dict | None]:
+    fetch_years = list(range(2015, datetime.now().year))
+    result: dict[str, dict] = {}
+    for year in fetch_years:
         try:
             r = requests.get(
                 f"{BASE}/empSttus.json",
@@ -769,13 +838,21 @@ def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
             )
             raw = r.json()
             if raw.get("status") != "000":
-                return year, None
+                continue
             all_items = raw.get("list") or []
             if not all_items:
-                return year, None
+                continue
+
+            def _pick_agg(sex: str) -> dict | None:
+                rows = [x for x in all_items if (x.get("sexdstn") or "").strip() == sex]
+                if not rows:
+                    return None
+                agg = [x for x in rows if "합계" in (x.get("fo_bbm") or "")]
+                return agg[0] if agg else max(rows, key=lambda x: _emp_parse_int(x.get("sm")))
+
             rec: dict[str, Any] = {}
             for sex, prefix in [("남", "male"), ("여", "female")]:
-                item = _emp_pick_agg(all_items, sex)
+                item = _pick_agg(sex)
                 if not item:
                     continue
                 rec[prefix]                    = _emp_parse_int(item.get("rgllbr_co"))
@@ -783,23 +860,19 @@ def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
                 rec[f"{prefix}_total"]         = _emp_parse_int(item.get("sm"))
                 rec[f"avg_tenure_{prefix[0]}"] = _emp_parse_float(item.get("avrg_cnwk_sdytrn"))
                 rec[f"salary_{prefix[0]}"]     = _emp_parse_salary(item.get("jan_salary_am"))
+
             if rec:
                 rec["total"] = rec.get("male_total", 0) + rec.get("female_total", 0)
-                return year, rec
-            return year, None
-        except Exception:
-            return year, None
-
-    result: dict[str, dict] = {}
-    fetch_years = list(range(2015, datetime.now().year))
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        for year, rec in executor.map(_fetch_emp_year, fetch_years):
-            if rec:
                 result[str(year)] = rec
+        except Exception:
+            continue
     return result
+
+
 # ══════════════════════════════════════════
 #  주가 데이터 (yfinance)
 # ══════════════════════════════════════════
+
 def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
     """corp_cls 에 맞는 거래소 접미사를 시도하고, 데이터가 없으면 반대 거래소도 시도.
     DART가 corp_cls='E'(기타)로 잘못 분류한 KOSPI/KOSDAQ 종목에 대응.
@@ -816,6 +889,8 @@ def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
         except Exception:
             continue
     return None
+
+
 @st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
                       timeframe: str = "6mo", _ver: int = _CACHE_VER) -> list[dict]:
@@ -871,6 +946,8 @@ def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
         return data
     except Exception:
         return []
+
+
 @st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                          corp_code: str = "", _ver: int = _CACHE_VER) -> dict:
@@ -882,6 +959,7 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
             return {"__error__": "주가 데이터 없음 (KS/KQ 모두 시도)"}
         actual_ticker, _ = resolved
         t = yf.Ticker(actual_ticker)
+
         shares: int | None = None
         try:
             shares = t.fast_info.shares
@@ -889,6 +967,7 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
             pass
         if not shares:
             shares = (t.info or {}).get("sharesOutstanding")
+
         today_mktcap_eok: int | None = None
         try:
             mc = t.fast_info.market_cap
@@ -896,21 +975,25 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                 today_mktcap_eok = round(float(mc) / 1e8)
         except Exception:
             pass
+
         today_price: float | None = None
         try:
             today_price = float(t.fast_info.last_price)
         except Exception:
             pass
+
         hist = t.history(period="12y", interval="1mo", auto_adjust=True)
         if hist.empty:
             return {"__error__": "주가 데이터 없음"}
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
+
         cur_year = datetime.now().year
         year_closes: dict[int, float] = {}
         for yr in range(cur_year - 9, cur_year + 1):
             yr_data = hist[hist.index.year == yr]
             if not yr_data.empty:
                 year_closes[yr] = float(yr_data["Close"].iloc[-1])
+
         # 시가총액
         mktcap: dict[str, int] = {}
         if shares:
@@ -923,10 +1006,12 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
             mktcap[str(cur_year)] = round(today_price * shares / 1e8)
         elif shares and cur_year in year_closes:
             mktcap[str(cur_year)] = round(year_closes[cur_year] * shares / 1e8)
+
         # PER / PBR — DART 재무 기반 (병렬 조회)
         per_pbr: dict[str, dict] = {}
         if corp_code and shares and shares > 0:
             target_years = [yr for yr in range(cur_year - 9, cur_year) if yr in year_closes]
+
             def _fetch_per_pbr(yr: int) -> tuple[int, dict | None]:
                 d = fetch_year(corp_code, yr, "CFS") or fetch_year(corp_code, yr, "OFS")
                 if not d:
@@ -937,10 +1022,12 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                 per = round(close / (ni * 1e8 / shares), 1) if (ni and ni > 0) else None
                 pbr = round(close / (eq * 1e8 / shares), 2) if (eq and eq > 0) else None
                 return yr, {"PER": per, "PBR": pbr} if (per is not None or pbr is not None) else None
+
             with ThreadPoolExecutor(max_workers=5) as executor:
                 for yr, pp in executor.map(_fetch_per_pbr, target_years):
                     if pp:
                         per_pbr[str(yr)] = pp
+
         # yfinance fallback (DART 데이터 없을 때)
         if not per_pbr:
             try:
@@ -953,9 +1040,11 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                     if bs_f is not None and not bs_f.empty:
                         bs_T = bs_f.T.copy()
                         bs_T.index = pd.to_datetime(bs_T.index).tz_localize(None)
+
                     NI_KEYS = ["Net Income", "Net Income Common Stockholders"]
                     EQ_KEYS = ["Stockholders Equity", "Common Stock Equity",
                                "Total Equity Gross Minority Interest"]
+
                     for idx_date in fin_T.index:
                         yr    = idx_date.year
                         close = year_closes.get(yr)
@@ -972,6 +1061,7 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                             per_pbr[str(yr)] = {"PER": per, "PBR": pbr}
             except Exception:
                 pass
+
         # 오늘 포인트
         if today_price and shares and shares > 0:
             today_label = datetime.now().strftime("%Y-%m-%d")
@@ -988,12 +1078,16 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                         today_pp["PBR"] = round(today_price / (eq_t * 1e8 / shares), 2)
                     if today_pp:
                         per_pbr[today_label] = today_pp
+
         return {"mktcap": mktcap, "per_pbr": per_pbr}
     except Exception as e:
         return {"__error__": str(e)}
+
+
 # ══════════════════════════════════════════
 #  차트 헬퍼
 # ══════════════════════════════════════════
+
 def make_bar(years: list, series: dict, title: str) -> go.Figure:
     colors_list = [COLORS["blue"], COLORS["red"], COLORS["green"],
                    COLORS["orange"], COLORS["purple"]]
@@ -1005,6 +1099,8 @@ def make_bar(years: list, series: dict, title: str) -> go.Figure:
     fig.update_layout(title_text=title, title_font_color="#1e293b",
                       title_font_size=12, barmode="group", **PLOTLY_LAYOUT)
     return fig
+
+
 def make_line(years: list, series: dict, title: str, is_pct: bool = False) -> go.Figure:
     colors_list = [COLORS["orange"], COLORS["purple"], COLORS["green"],
                    COLORS["blue"], COLORS["red"]]
@@ -1020,9 +1116,12 @@ def make_line(years: list, series: dict, title: str, is_pct: bool = False) -> go
         **{k: v for k, v in PLOTLY_LAYOUT.items() if k != "yaxis"},
     )
     return fig
+
+
 # ══════════════════════════════════════════
 #  KPI 카드
 # ══════════════════════════════════════════
+
 def kpi_card(label: str, cur, prev, is_pct: bool = False, invert: bool = False) -> None:
     if cur is None:
         val_str    = "-"
@@ -1048,19 +1147,22 @@ def kpi_card(label: str, cur, prev, is_pct: bool = False, invert: bool = False) 
         f'{delta_html}</div>',
         unsafe_allow_html=True,
     )
+
+
 # ══════════════════════════════════════════
 #  주식 탭 — 서브 렌더러
 # ══════════════════════════════════════════
-def _render_mktcap_chart(stock_code: str, corp_cls: str, corp_code: str) -> dict:
+
+def _render_mktcap_chart(stock_code: str, corp_cls: str, corp_code: str) -> None:
     _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
     yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_CACHE_VER)
     if "__error__" in yf_data:
         st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
-        return yf_data
+        return
     mktcap = yf_data.get("mktcap", {})
     if not mktcap:
         st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
-        return yf_data
+        return
     cur_yr_str = str(datetime.now().year)
     years_mc   = sorted(mktcap.keys())
     vals_mc    = [mktcap[y] for y in years_mc]
@@ -1078,29 +1180,34 @@ def _render_mktcap_chart(stock_code: str, corp_cls: str, corp_code: str) -> dict
                    tickfont=dict(color="#64748b")),
     )
     st.plotly_chart(fig, use_container_width=True)
-    return yf_data
+    return yf_data  # type: ignore[return-value]
+
+
 def _render_per_pbr_chart(yf_data: dict) -> None:
     _section_header("PER / PBR 밸류에이션 추이", "연말 종가 기준 · 오늘: trailing 기준")
-    raw_per_pbr = yf_data.get("per_pbr", {})
-    if not raw_per_pbr:
+    per_pbr = yf_data.get("per_pbr", {})
+    if not per_pbr:
         st.caption("PER/PBR 계산에 필요한 재무데이터(순이익, 자본총계)를 가져올 수 없습니다.")
         return
-    # 캐시 원본 보호: 날짜 키 정규화 시 shallow copy 사용
+
     today_key = datetime.now().strftime("%Y-%m-%d")
-    per_pbr: dict[str, dict] = {}
-    for k, v in raw_per_pbr.items():
-        # 오래된 날짜 키(어제 이전 날짜 포인트)를 오늘 키로 정규화
-        per_pbr[today_key if (not _is_year_key(k) and k != today_key) else k] = v
+
+    # 오래된 날짜 키를 오늘 날짜 키로 갱신
+    for stale in [k for k in list(per_pbr.keys()) if not _is_year_key(k) and k != today_key]:
+        per_pbr[today_key] = per_pbr.pop(stale)
+
     hist_keys  = sorted([k for k in per_pbr if _is_year_key(k)], key=int)
     date_keys  = sorted([k for k in per_pbr if not _is_year_key(k)])
     years_pp   = hist_keys + date_keys
     per_vals   = [per_pbr[y].get("PER") for y in years_pp]
     pbr_vals   = [per_pbr[y].get("PBR") for y in years_pp]
+
     def _marker(base_color: str) -> dict:
         return dict(
             size=[9 if not _is_year_key(y) else 5 for y in years_pp],
             color=[COLORS["red"] if not _is_year_key(y) else base_color for y in years_pp],
         )
+
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
         x=years_pp, y=per_vals, name="PER", mode="lines+markers",
@@ -1122,19 +1229,188 @@ def _render_per_pbr_chart(yf_data: dict) -> None:
     fig.update_yaxes(title_text="PBR (배)", ticksuffix="x",
                      gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)
+
+
+def _load_fs_data(corp_code: str) -> dict:
+    """재무 데이터 로드 (session_state 캐시 우선)."""
+    cached = st.session_state.get(f"{corp_code}_data")
+    if cached:
+        return cached
+    cfs = fetch_all_years(corp_code, "CFS")
+    ofs = fetch_all_years(corp_code, "OFS")
+    return {**ofs, **cfs} if (cfs and ofs) else (cfs or ofs or {})
+
+
+def _render_ev_ebitda_chart(corp_code: str, yf_data: dict) -> None:
+    """EV/EBITDA 밸류에이션 추이 차트.
+    EV = 시가총액 + 부채총계 − 기말현금  /  EBITDA ≈ 영업이익(EBIT 근사)
+    """
+    _section_header("EV/EBITDA 추이",
+                    "EV = 시가총액 + 부채총계 − 기말현금 · EBITDA ≈ 영업이익 근사")
+
+    mktcap = yf_data.get("mktcap", {})
+    if not mktcap:
+        st.caption("시가총액 데이터가 없어 EV/EBITDA를 계산할 수 없습니다.")
+        return
+
+    with st.spinner("재무 데이터 조회 중..."):
+        fs_data = _load_fs_data(corp_code)
+    if not fs_data:
+        st.caption("재무 데이터를 불러올 수 없어 EV/EBITDA를 계산할 수 없습니다.")
+        return
+
+    ev_ebitda_map: dict[str, float] = {}
+    for yr_str, mc in mktcap.items():
+        if not _is_year_key(yr_str):
+            continue
+        fd = fs_data.get(yr_str)
+        if not fd:
+            continue
+        liabilities = fd["bs"].get("liabilities") or 0
+        cash        = fd["cf"].get("endCash")     or 0
+        op_income   = fd["is"].get("opIncome")
+        if not op_income or op_income <= 0:
+            continue
+        ev = mc + liabilities - cash          # 단위: 억원
+        ev_ebitda_map[yr_str] = round(ev / op_income, 1)
+
+    if not ev_ebitda_map:
+        st.caption("EV/EBITDA를 계산하기 위한 데이터가 충분하지 않습니다.")
+        return
+
+    years_ev = sorted(ev_ebitda_map.keys(), key=int)
+    vals_ev  = [ev_ebitda_map[y] for y in years_ev]
+    avg_ev   = round(sum(vals_ev) / len(vals_ev), 1)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years_ev, y=vals_ev, name="EV/EBITDA",
+        mode="lines+markers+text",
+        line=dict(color=COLORS["purple"], width=2),
+        marker=dict(size=6),
+        text=[str(v) for v in vals_ev],
+        textposition="top center", textfont=dict(size=9, color=COLORS["purple"]),
+    ))
+    fig.add_hline(y=avg_ev, line_dash="dot", line_color="#94a3b8",
+                  annotation_text=f"평균 {avg_ev}x",
+                  annotation_position="bottom right",
+                  annotation_font=dict(size=10, color="#94a3b8"))
+    fig.update_layout(
+        title_text="EV/EBITDA 추이 (배)", title_font_color="#1e293b", title_font_size=12,
+        yaxis=dict(ticksuffix="x", gridcolor="#e2e8f0", tickfont=dict(color="#64748b")),
+        xaxis=dict(type="category", gridcolor="#e2e8f0",
+                   tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+        **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "xaxis")},
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_dcf_calculator(corp_code: str) -> None:
+    """간이 DCF 내재가치 계산기. FCF ≈ 영업현금흐름(OCF) 사용."""
+    _section_header("간이 DCF 내재가치 계산기",
+                    "FCF = 영업현금흐름(OCF) 근사 · 결과는 참고용이며 투자 조언이 아닙니다")
+
+    with st.spinner("재무 데이터 조회 중..."):
+        fs_data = _load_fs_data(corp_code)
+    if not fs_data:
+        st.caption("재무 데이터를 불러올 수 없습니다.")
+        return
+
+    years   = sorted(fs_data.keys())
+    recent  = years[-3:] if len(years) >= 3 else years
+    ocf_vals = [fs_data[y]["cf"].get("opCF")
+                for y in recent if fs_data[y]["cf"].get("opCF")]
+
+    if not ocf_vals:
+        st.caption("현금흐름 데이터가 없어 DCF를 계산할 수 없습니다.")
+        return
+
+    base_fcf = round(sum(ocf_vals) / len(ocf_vals))
+    st.caption(
+        f"기준 FCF: 최근 **{len(ocf_vals)}년** 평균 영업CF "
+        f"= **{base_fcf:,}억원** "
+        f"({', '.join(str(v)+' 억' for v in ocf_vals)})"
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        g1 = st.number_input("성장률 — 향후 5년 (%)", min_value=-20.0, max_value=50.0,
+                             value=8.0, step=0.5, key=f"dcf_g1_{corp_code}") / 100
+    with c2:
+        gt = st.number_input("영구 성장률 (%)", min_value=0.0, max_value=8.0,
+                             value=2.0, step=0.5, key=f"dcf_gt_{corp_code}") / 100
+    with c3:
+        wacc = st.number_input("할인율 — WACC (%)", min_value=1.0, max_value=30.0,
+                               value=10.0, step=0.5, key=f"dcf_wacc_{corp_code}") / 100
+
+    if wacc <= gt:
+        st.warning("할인율(WACC)이 영구 성장률보다 커야 합니다.")
+        return
+
+    # ── DCF 계산 ──
+    fcf    = float(base_fcf)
+    pv_sum = 0.0
+    rows: list[dict] = []
+    for n in range(1, 6):
+        fcf  *= (1 + g1)
+        pv    = fcf / (1 + wacc) ** n
+        pv_sum += pv
+        rows.append({"연도": f"Y+{n}", "예상 FCF": round(fcf), "현재가치 PV": round(pv)})
+
+    terminal_val = rows[-1]["예상 FCF"] * (1 + gt) / (wacc - gt)
+    pv_terminal  = terminal_val / (1 + wacc) ** 5
+    intrinsic    = round(pv_sum + pv_terminal)
+
+    # ── KPI 카드 ──
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        st.metric("DCF 내재가치", f"{intrinsic:,}억원")
+    with k2:
+        st.metric("현금흐름 PV 합계", f"{round(pv_sum):,}억원")
+    with k3:
+        st.metric("잔존가치(Terminal) PV", f"{round(pv_terminal):,}억원")
+
+    # ── FCF / PV 바차트 ──
+    yrs  = [r["연도"]     for r in rows]
+    fcfs = [r["예상 FCF"] for r in rows]
+    pvs  = [r["현재가치 PV"] for r in rows]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="예상 FCF (억원)", x=yrs, y=fcfs,
+                         marker_color=COLORS["blue"], marker_line_width=0,
+                         text=[f"{v:,}" for v in fcfs],
+                         textposition="outside", textfont=dict(size=9)))
+    fig.add_trace(go.Bar(name="현재가치 PV (억원)", x=yrs, y=pvs,
+                         marker_color=COLORS["orange"], marker_line_width=0,
+                         text=[f"{v:,}" for v in pvs],
+                         textposition="outside", textfont=dict(size=9)))
+    fig.update_layout(
+        title_text="연도별 FCF / 현재가치 (억원)",
+        title_font_color="#1e293b", title_font_size=12,
+        barmode="group", **PLOTLY_LAYOUT,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── 상세 테이블 ──
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
 def _render_shareholder_section(corp_code: str) -> None:
     """최대주주 현황 + 변동현황 테이블 렌더링."""
     rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
                    "11013": "1분기보고서", "11014": "3분기보고서"}
+
     # ① 현황 테이블
     with st.spinner("최대주주 데이터 조회 중..."):
         shareholders = fetch_major_shareholders(corp_code)
+
     if shareholders:
         ref       = shareholders[0]
         ref_label = f"{ref['year']}년 {rcode_label.get(ref['rcode'], ref['rcode'])}"
         if ref.get("stlm_dt"):
             ref_label += f"  ·  결산일 {ref['stlm_dt']}"
         _section_header("최대주주·임원 소유현황", ref_label)
+
         rows_html = ""
         for i, sh in enumerate(shareholders):
             bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
@@ -1162,15 +1438,18 @@ def _render_shareholder_section(corp_code: str) -> None:
     else:
         _section_header("최대주주·임원 소유현황")
         st.caption("소유현황 데이터를 찾을 수 없습니다.")
+
     # ② 변동현황 테이블
     with st.spinner("최대주주 변동현황 조회 중..."):
         sh_history = fetch_major_shareholder_history(corp_code)
+
     if sh_history:
         ref_h     = sh_history[0]
         h_label   = f"{ref_h['year']}년 {rcode_label.get(ref_h['rcode'], ref_h['rcode'])}"
         if ref_h.get("stlm_dt"):
             h_label += f"  ·  결산일 {ref_h['stlm_dt']}"
         _section_header("최대주주 변동현황", h_label)
+
         rows_h = ""
         for i, sh in enumerate(sh_history):
             bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
@@ -1194,14 +1473,18 @@ def _render_shareholder_section(corp_code: str) -> None:
     else:
         _section_header("최대주주 변동현황")
         st.caption("변동현황 데이터를 찾을 수 없습니다.")
+
+
 def _render_large_holdings(corp_code: str) -> None:
     """대량보유상황보고 테이블 렌더링."""
     with st.spinner("대량보유상황보고 조회 중..."):
         large_holdings = fetch_large_holding_reports(corp_code, count=15, _ver=_CACHE_VER)
+
     _section_header("대량보유상황보고")
     if not large_holdings:
         st.caption("대량보유상황보고 데이터를 찾을 수 없습니다.")
         return
+
     def _irds_cell(qty: int | None, rt: float | None) -> tuple[str, str]:
         if qty is not None and qty != 0:
             c   = "#dc2626" if qty > 0 else "#2563eb"
@@ -1212,6 +1495,7 @@ def _render_large_holdings(corp_code: str) -> None:
         else:
             q_html = r_html = '<span style="color:#94a3b8;font-size:.72rem;">-</span>'
         return q_html, r_html
+
     rows_lh = ""
     for i, lh in enumerate(large_holdings):
         bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
@@ -1242,14 +1526,18 @@ def _render_large_holdings(corp_code: str) -> None:
                     align=["left", "left", "right", "right", "right", "right", "left"]),
         unsafe_allow_html=True,
     )
+
+
 def _render_executive_reports(corp_code: str) -> None:
     """임원·주요주주 소유보고 테이블 렌더링."""
     with st.spinner("임원·주요주주 소유보고 조회 중..."):
         exec_reports = fetch_executive_stock_reports(corp_code, count=15, _ver=_CACHE_VER)
+
     _section_header("임원·주요주주 소유보고")
     if not exec_reports:
         st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
         return
+
     rows_er = ""
     for i, er in enumerate(exec_reports):
         bg    = "#f8fafc" if i % 2 == 0 else "#ffffff"
@@ -1288,28 +1576,21 @@ def _render_executive_reports(corp_code: str) -> None:
                     align=["left", "left", "left", "right", "right"]),
         unsafe_allow_html=True,
     )
-# ══════════════════════════════════════════
-#  주주 현황 탭 통합 렌더러
-# ══════════════════════════════════════════
-def _render_shareholder_tab(corp_code: str) -> None:
-    """주주 현황 탭: 4가지 주주 섹션 통합 렌더링."""
-    if not corp_code:
-        st.caption("종목코드가 없는 비상장 기업은 주주 현황 데이터를 제공하지 않습니다.")
-        return
-    _render_shareholder_section(corp_code)
-    _render_large_holdings(corp_code)
-    _render_executive_reports(corp_code)
+
 
 # ══════════════════════════════════════════
 #  주가 차트 메인
 # ══════════════════════════════════════════
+
 def render_stock_chart(stock_code: str, corp_name: str,
                        corp_cls: str = "Y", corp_code: str = "") -> None:
     if not stock_code:
         return
+
     period_labels = ["6달", "2년", "3년", "월봉", "연봉"]
     sel = st.radio("기간", period_labels, horizontal=True,
                    key=f"sp_{stock_code}", label_visibility="collapsed")
+
     col_ma1, col_ma2 = st.columns(2)
     with col_ma1:
         ma_period1 = int(st.number_input("이평선1", min_value=0, max_value=300,
@@ -1317,6 +1598,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
     with col_ma2:
         ma_period2 = int(st.number_input("이평선2", min_value=0, max_value=300,
                                          value=200, key=f"ma2b_{stock_code}"))
+
     tf_map    = {"6달": "6mo", "2년": "24mo", "3년": "36mo", "월봉": "month", "연봉": "year"}
     title_map = {
         "6달":  f"{corp_name}  일봉 (최근 6개월)",
@@ -1326,11 +1608,14 @@ def render_stock_chart(stock_code: str, corp_name: str,
         "연봉": f"{corp_name}  연봉 (최근 20년)",
     }
     is_daily = sel in ("6달", "2년", "3년")
+
     with st.spinner("주가 데이터 조회 중..."):
         chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=_CACHE_VER)
+
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
+
     # 시세 정보 바 (일봉만)
     if is_daily:
         last       = chart_data[-1]
@@ -1340,6 +1625,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
         turnover   = round(last["close"] * last["volume"] / 1e8, 1)
         clr        = "#dc2626" if chg_val >= 0 else "#2563eb"
         sym        = "▲" if chg_val > 0 else ("▼" if chg_val < 0 else "━")
+
         info_cells = (
               _stock_info_cell("시가",   f"{last['open']:,.0f}")
             + _stock_info_cell("고가",   f"{last['high']:,.0f}", "#dc2626")
@@ -1359,6 +1645,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
             f'</div>',
             unsafe_allow_html=True,
         )
+
     dates   = [d["date"]   for d in chart_data]
     opens_  = [d["open"]   for d in chart_data]
     highs   = [d["high"]   for d in chart_data]
@@ -1366,8 +1653,10 @@ def render_stock_chart(stock_code: str, corp_name: str,
     closes  = [d["close"]  for d in chart_data]
     volumes = [d["volume"] for d in chart_data]
     vol_colors = ["#dc2626" if c >= o else "#2563eb" for c, o in zip(closes, opens_)]
+
     ma_cfg  = [(ma_period1, "#f59e0b"), (ma_period2, "#8b5cf6")]
     show_ma = is_daily and any(p > 0 and len(closes) >= p for p, _ in ma_cfg)
+
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         vertical_spacing=0.04, row_heights=[0.72, 0.28])
     fig.add_trace(go.Candlestick(
@@ -1376,6 +1665,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
         decreasing_line_color="#2563eb", decreasing_fillcolor="#2563eb",
         line_width=1,
     ), row=1, col=1)
+
     if is_daily:
         for ma_p, ma_color in ma_cfg:
             if ma_p > 0 and len(closes) >= ma_p:
@@ -1387,10 +1677,12 @@ def render_stock_chart(stock_code: str, corp_name: str,
                     x=dates, y=ma_vals, mode="lines", name=f"이평선{ma_p}",
                     line=dict(color=ma_color, width=1.4),
                 ), row=1, col=1)
+
     fig.add_trace(go.Bar(
         x=dates, y=volumes, name="거래량",
         marker_color=vol_colors, opacity=0.75,
     ), row=2, col=1)
+
     fig.update_layout(
         title=dict(text=title_map[sel], font=dict(size=12, color="#1e293b"),
                    x=0, y=0.98, yanchor="top"),
@@ -1412,14 +1704,24 @@ def render_stock_chart(stock_code: str, corp_name: str,
         fig.update_xaxes(type="category", nticks=min(len(dates), 12), tickangle=-45)
     fig.update_yaxes(title_text="거래량", tickformat=".3s", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
+
     # 서브섹션 렌더링
     if corp_code:
         yf_data = _render_mktcap_chart(stock_code, corp_cls, corp_code)
         if yf_data and "__error__" not in yf_data:
             _render_per_pbr_chart(yf_data)
+            _render_ev_ebitda_chart(corp_code, yf_data)
+            _render_dcf_calculator(corp_code)
+
+        _render_shareholder_section(corp_code)
+        _render_large_holdings(corp_code)
+        _render_executive_reports(corp_code)
+
+
 # ══════════════════════════════════════════
 #  재무제표 탭
 # ══════════════════════════════════════════
+
 def _render_fs_tab(corp: dict) -> None:
     cache_key = f"{corp['corp_code']}_data"
     need_fetch = (
@@ -1432,6 +1734,7 @@ def _render_fs_tab(corp: dict) -> None:
         with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
             cfs = fetch_all_years(corp["corp_code"], "CFS")
             ofs = fetch_all_years(corp["corp_code"], "OFS")
+
             if cfs and ofs:
                 # CFS 우선, CFS에 없는 연도는 OFS로 보완 (금융지주·은행 등 CFS 이력이 짧은 경우 대응)
                 data   = {**ofs, **cfs}
@@ -1453,18 +1756,22 @@ def _render_fs_tab(corp: dict) -> None:
     else:
         data   = st.session_state[cache_key]
         fs_div = st.session_state.get(cache_key + "_fs", "CFS")
+
     if not data:
         st.error("재무데이터를 불러올 수 없습니다.")
         return
+
     years    = sorted(data.keys())
     fs_label_map = {"CFS": "연결재무제표", "OFS": "별도재무제표",
                     "CFS+OFS": "연결(최근)+별도(과거) 혼합", "-": ""}
     fs_label = fs_label_map.get(fs_div, fs_div)
     st.caption(f"{fs_label} 기준 · {years[0]}~{years[-1]} · 단위: 억원")
+
     ly      = years[-1]
     py      = years[-2] if len(years) >= 2 else None
     ld      = data[ly]
     pd_data = data[py] if py else {}
+
     c1, c2, c3 = st.columns(3)
     with c1:
         kpi_card("매출액 (최근)",   ld["is"].get("revenue"),  pd_data.get("is", {}).get("revenue"))
@@ -1481,8 +1788,10 @@ def _render_fs_tab(corp: dict) -> None:
                  pct(ld["is"].get("opIncome"), ld["is"].get("revenue")),
                  pct(pd_data.get("is", {}).get("opIncome"), pd_data.get("is", {}).get("revenue")),
                  is_pct=True)
+
     st.divider()
     sub_bs, sub_is, sub_cf = st.tabs(["📋 재무상태표", "💰 손익계산서", "💧 현금흐름표"])
+
     with sub_bs:
         st.plotly_chart(make_bar(years, {
             "자산총계": [data[y]["bs"].get("assets")     for y in years],
@@ -1507,6 +1816,7 @@ def _render_fs_tab(corp: dict) -> None:
                 "자기자본비율": f"{pct(b.get('equity'),b.get('assets')):.1f}%" if pct(b.get("equity"), b.get("assets")) else "-",
             })
         st.dataframe(rows, hide_index=True, use_container_width=True)
+
     with sub_is:
         st.plotly_chart(make_bar(years, {
             "매출액":   [data[y]["is"].get("revenue")   for y in years],
@@ -1527,6 +1837,7 @@ def _render_fs_tab(corp: dict) -> None:
                 "순이익률":   f"{pct(s.get('netIncome'),s.get('revenue')):.1f}%" if pct(s.get("netIncome"), s.get("revenue")) else "-",
             })
         st.dataframe(rows, hide_index=True, use_container_width=True)
+
     with sub_cf:
         st.plotly_chart(make_bar(years, {
             "영업CF": [data[y]["cf"].get("opCF")  for y in years],
@@ -1536,66 +1847,21 @@ def _render_fs_tab(corp: dict) -> None:
         st.plotly_chart(make_line(years, {
             "기말현금": [data[y]["cf"].get("endCash") for y in years],
         }, "기말현금 추이 (억원)"), use_container_width=True)
-
-        # ── EBITDA 구성 차트 ──────────────────────────────────────
-        # EBITDA = 영업이익(IS) + 감가상각비(D, CF조정항목) + 무형자산상각비(A, CF조정항목)
-        has_da = any(
-            data[y]["cf"].get("depre") is not None
-            or data[y]["cf"].get("amort") is not None
-            for y in years
-        )
-        if has_da:
-            _section_header(
-                "EBITDA 구성",
-                "감가상각비(D) + 무형자산상각비(A) — 현금흐름표 영업활동 조정항목 기준 (억원)",
-            )
-            st.plotly_chart(make_bar(years, {
-                "감가상각비(D)":     [data[y]["cf"].get("depre") for y in years],
-                "무형자산상각비(A)": [data[y]["cf"].get("amort") for y in years],
-            }, "감가상각비 · 무형자산상각비 (억원)"), use_container_width=True)
-
-            def _ebitda(y: str) -> int | None:
-                # EBITDA = 영업이익 + 감가상각비 + 무형자산상각비
-                op  = data[y]["is"].get("opIncome")
-                dep = data[y]["cf"].get("depre")
-                amt = data[y]["cf"].get("amort")
-                if op is None and dep is None and amt is None:
-                    return None
-                return (op or 0) + (dep or 0) + (amt or 0)
-
-            st.plotly_chart(make_line(years, {
-                "EBITDA": [_ebitda(y) for y in years],
-            }, "EBITDA 추이 (억원)  =  영업이익 + 감가상각비 + 무형자산상각비"),
-                use_container_width=True)
-
         rows = []
         for y in reversed(years):
-            c     = data[y]["cf"]
-            dep_v = c.get("depre")
-            amt_v = c.get("amort")
-            op_v  = data[y]["is"].get("opIncome")
-            # EBITDA 계산
-            ebitda_v = (
-                (op_v or 0) + (dep_v or 0) + (amt_v or 0)
-                if (op_v is not None or dep_v is not None or amt_v is not None)
-                else None
-            )
-            row: dict[str, Any] = {
-                "연도":    y,
-                "영업CF":  fmt(c.get("opCF")),
-                "투자CF":  fmt(c.get("invCF")),
-                "재무CF":  fmt(c.get("finCF")),
+            c = data[y]["cf"]
+            rows.append({
+                "연도": y, "영업CF": fmt(c.get("opCF")),
+                "투자CF": fmt(c.get("invCF")), "재무CF": fmt(c.get("finCF")),
                 "기말현금": fmt(c.get("endCash")),
-            }
-            if has_da:
-                row["감가상각비(D)"]     = fmt(dep_v)
-                row["무형자산상각비(A)"] = fmt(amt_v)
-                row["EBITDA"]            = fmt(ebitda_v)
-            rows.append(row)
+            })
         st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
 # ══════════════════════════════════════════
 #  공시·뉴스 탭
 # ══════════════════════════════════════════
+
 def _render_news_tab(corp: dict) -> None:
     st.subheader("📢 최근 공시")
     with st.spinner("공시 조회 중..."):
@@ -1616,6 +1882,7 @@ def _render_news_tab(corp: dict) -> None:
             )
     else:
         st.caption(f"공시 없음 — {disc_label}")
+
     st.divider()
     st.subheader("📰 최근 뉴스")
     with st.spinner("뉴스 수집 중..."):
@@ -1632,16 +1899,22 @@ def _render_news_tab(corp: dict) -> None:
             )
     else:
         st.caption("뉴스를 불러올 수 없습니다.")
+
+
 # ══════════════════════════════════════════
 #  직원 현황 탭
 # ══════════════════════════════════════════
+
 def _render_employee_tab(corp: dict) -> None:
     with st.spinner("직원 현황 조회 중..."):
         emp_data = fetch_employee_status(corp["corp_code"], _ver=_CACHE_VER)
+
     if not emp_data:
         st.caption("직원 현황 데이터를 찾을 수 없습니다.")
         return
+
     eyears = sorted(emp_data.keys())
+
     # 정규직 누적 막대 + 합계 라인
     fig_emp = go.Figure()
     fig_emp.add_trace(go.Bar(
@@ -1671,6 +1944,7 @@ def _render_employee_tab(corp: dict) -> None:
         title_font_size=12, barmode="stack", **PLOTLY_LAYOUT,
     )
     st.plotly_chart(fig_emp, use_container_width=True)
+
     # 평균 근속연수
     fig_tenure = go.Figure()
     for sex, color in [("m", "#2563eb"), ("f", "#ec4899")]:
@@ -1687,6 +1961,7 @@ def _render_employee_tab(corp: dict) -> None:
     )
     fig_tenure.update_yaxes(ticksuffix="년", gridcolor="#e2e8f0")
     st.plotly_chart(fig_tenure, use_container_width=True)
+
     # 1인 평균 연봉
     sal_years = [y for y in eyears
                  if emp_data[y].get("salary_m") or emp_data[y].get("salary_f")]
@@ -1705,6 +1980,7 @@ def _render_employee_tab(corp: dict) -> None:
         )
         fig_sal.update_yaxes(ticksuffix="만", gridcolor="#e2e8f0")
         st.plotly_chart(fig_sal, use_container_width=True)
+
     # 데이터 테이블
     tbl_rows = [
         {
@@ -1722,329 +1998,16 @@ def _render_employee_tab(corp: dict) -> None:
         for y in reversed(eyears)
     ]
     st.dataframe(tbl_rows, hide_index=True, use_container_width=True)
-# ══════════════════════════════════════════
-#  3중 적정주가 산정 (PER · PBR · DCF)
-# ══════════════════════════════════════════
-def compute_fair_values(
-    corp_code: str,
-    stock_code: str,
-    corp_cls: str,
-    wacc: float       = 0.10,
-    terminal_g: float = 0.02,
-    fcf_growth: float = 0.05,
-    proj_years: int   = 5,
-    _ver: int         = _CACHE_VER,
-) -> dict:
-    """
-    3중 적정주가 산정 공식 (PER · PBR · DCF)
-    ==========================================
-
-    ① PER 기반 적정주가
-       EPS(원)       = 당기순이익(억원) × 1억 ÷ 발행주식수
-       과거평균PER   = mean( PER_t  for t in 수집된 과거 연도 )
-       PER 적정주가  = 과거평균PER × EPS
-
-    ② PBR 기반 적정주가
-       BPS(원)       = 자기자본총계(억원) × 1억 ÷ 발행주식수
-       과거평균PBR   = mean( PBR_t  for t in 수집된 과거 연도 )
-       PBR 적정주가  = 과거평균PBR × BPS
-
-    ③ DCF 내재가치 (잉여현금흐름 할인 모형, Discounted Cash Flow)
-       FCF₀(원)      = 최근 3개년 평균 영업활동현금흐름(억원) × 1억
-                       ※ 영업CF를 FCF 근사치로 사용 (CAPEX 별도 조정 불가 시)
-
-       현금흐름 PV 합계 (N년간 FCF 현재가치 합):
-         PV_FCF = Σ_{t=1}^{N}  FCF₀ × (1 + g_fcf)^t
-                                ─────────────────────
-                                     (1 + WACC)^t
-
-       잔존가치 (Terminal Value, TV) — 고든성장모형 (Gordon Growth Model):
-         FCF_N  = FCF₀ × (1 + g_fcf)^N              ← N년차 FCF
-         TV     = FCF_N × (1 + g_terminal)
-                  ────────────────────────            ← 영구성장 현금흐름
-                      WACC − g_terminal
-         PV_TV  = TV ÷ (1 + WACC)^N                 ← TV 현재가치
-
-       기업가치 (Enterprise Value, EV):
-         EV     = PV_FCF + PV_TV
-
-       자기자본가치 (Equity Value):
-         순부채 = 부채총계(억원) × 1억 − 기말현금(억원) × 1억
-         EqV    = EV − 순부채
-
-       DCF 주당 내재가치:
-         DCF/주 = max(EqV, 0) ÷ 발행주식수
-
-    ④ 컨센서스 (단순평균):
-         Consensus = mean( [PER적정주가, PBR적정주가, DCF내재가치] 중 유효값 )
-    """
-    result: dict[str, Any] = {"error": None}
-    if not _YF_AVAILABLE or not stock_code or not corp_code:
-        result["error"] = "비상장 또는 데이터 부족"
-        return result
-    try:
-        # ── 주가·주식수 (캐시된 fetch_yf_annual_data 활용) ──────────
-        yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_ver)
-        if "__error__" in yf_data:
-            result["error"] = yf_data["__error__"]
-            return result
-
-        resolved = _resolve_ticker(stock_code, corp_cls)
-        if resolved is None:
-            result["error"] = "ticker 없음 (KS/KQ 모두 시도)"
-            return result
-        ticker, _ = resolved
-        t = yf.Ticker(ticker)
-
-        shares: int | None = None
-        try:
-            shares = t.fast_info.shares
-        except Exception:
-            pass
-        if not shares:
-            shares = (t.info or {}).get("sharesOutstanding")
-
-        current_price: float | None = None
-        try:
-            current_price = float(t.fast_info.last_price)
-        except Exception:
-            pass
-
-        if not shares or shares <= 0:
-            result["error"] = "발행주식수 없음"
-            return result
-
-        # ── 재무데이터 (fetch_all_years 캐시 활용) ──────────────────
-        cfs = fetch_all_years(corp_code, "CFS", _ver=_ver)
-        ofs = fetch_all_years(corp_code, "OFS", _ver=_ver)
-        fin_data = {**ofs, **cfs} if (cfs and ofs) else (cfs or ofs or {})
-        if not fin_data:
-            result["error"] = "재무데이터 없음"
-            return result
-
-        years_sorted = sorted(fin_data.keys(), reverse=True)
-        latest_yr    = years_sorted[0] if years_sorted else None
-        if not latest_yr:
-            result["error"] = "연도 데이터 없음"
-            return result
-
-        ld         = fin_data[latest_yr]
-        net_income = ld["is"].get("netIncome")   # 억원
-        equity     = ld["bs"].get("equity")       # 억원
-        liab       = ld["bs"].get("liabilities")  # 억원
-        end_cash   = ld["cf"].get("endCash")      # 억원
-
-        # ── ① PER 적정주가 ──────────────────────────────────────────
-        # EPS = 당기순이익(억원) × 1e8 / 발행주식수
-        # PER 적정주가 = 과거평균PER × EPS
-        per_pbr   = yf_data.get("per_pbr", {})
-        hist_pers = [
-            v["PER"] for v in per_pbr.values()
-            if isinstance(v.get("PER"), (int, float)) and v["PER"] > 0
-        ]
-        avg_per   = round(sum(hist_pers) / len(hist_pers), 1) if hist_pers else None
-        per_fair: float | None = None
-        if avg_per and net_income and net_income > 0:
-            eps      = net_income * 1e8 / shares   # 주당순이익(원)
-            per_fair = round(avg_per * eps, 0)
-
-        # ── ② PBR 적정주가 ──────────────────────────────────────────
-        # BPS = 자기자본총계(억원) × 1e8 / 발행주식수
-        # PBR 적정주가 = 과거평균PBR × BPS
-        hist_pbrs = [
-            v["PBR"] for v in per_pbr.values()
-            if isinstance(v.get("PBR"), (int, float)) and v["PBR"] > 0
-        ]
-        avg_pbr   = round(sum(hist_pbrs) / len(hist_pbrs), 2) if hist_pbrs else None
-        pbr_fair: float | None = None
-        if avg_pbr and equity and equity > 0:
-            bps      = equity * 1e8 / shares       # 주당순자산(원)
-            pbr_fair = round(avg_pbr * bps, 0)
-
-        # ── ③ DCF 내재가치 ──────────────────────────────────────────
-        # FCF₀: 최근 최대 3개년 영업CF 평균 (억원 → 원)
-        opcfs = [
-            fin_data[y]["cf"].get("opCF")
-            for y in years_sorted[:3]
-            if fin_data[y]["cf"].get("opCF") is not None
-        ]
-        dcf_fair: float | None     = None
-        pv_fcf_total: float | None = None
-        pv_tv: float | None        = None
-        fcf0_eok: float | None     = None   # 억원 단위 (표시용)
-
-        if opcfs and wacc > terminal_g:
-            fcf0     = (sum(opcfs) / len(opcfs)) * 1e8   # 원 단위
-            fcf0_eok = sum(opcfs) / len(opcfs)            # 억원 (표시용)
-
-            # 현금흐름 PV 합계: Σ FCF₀(1+g_fcf)^t / (1+WACC)^t, t=1..N
-            pv_fcf_total = sum(
-                fcf0 * (1 + fcf_growth) ** t / (1 + wacc) ** t
-                for t in range(1, proj_years + 1)
-            )
-
-            # 잔존가치(Terminal Value): Gordon Growth Model
-            fcf_n = fcf0 * (1 + fcf_growth) ** proj_years   # N년차 FCF
-            tv    = fcf_n * (1 + terminal_g) / (wacc - terminal_g)
-            pv_tv = tv / (1 + wacc) ** proj_years            # TV 현재가치
-
-            # EV = PV_FCF + PV_TV
-            # 순부채 = 부채총계 - 기말현금 (원 단위)
-            ev       = pv_fcf_total + pv_tv
-            net_debt = ((liab or 0) - (end_cash or 0)) * 1e8
-            eq_val   = ev - net_debt
-            if eq_val > 0:
-                dcf_fair = round(eq_val / shares, 0)
-
-        # ── ④ 컨센서스 (유효값 단순평균) ────────────────────────────
-        valids    = [v for v in [per_fair, pbr_fair, dcf_fair] if v is not None]
-        consensus = round(sum(valids) / len(valids), 0) if valids else None
-
-        return {
-            "error":         None,
-            "current_price": current_price,
-            "per_fair":      per_fair,
-            "pbr_fair":      pbr_fair,
-            "dcf_fair":      dcf_fair,
-            "consensus":     consensus,
-            "avg_per":       avg_per,
-            "avg_pbr":       avg_pbr,
-            # DCF 세부 (억원)
-            "pv_fcf":        round(pv_fcf_total / 1e8, 0) if pv_fcf_total else None,
-            "pv_tv":         round(pv_tv / 1e8, 0)        if pv_tv        else None,
-            "fcf0_eok":      round(fcf0_eok, 0)           if fcf0_eok     else None,
-            # 파라미터
-            "latest_yr":     latest_yr,
-            "shares":        shares,
-            "proj_years":    proj_years,
-            "wacc":          wacc,
-            "terminal_g":    terminal_g,
-            "fcf_growth":    fcf_growth,
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def _render_valuation_card(fv: dict) -> None:
-    """
-    PER + PBR + DCF 3중 적정주가 요약 카드 렌더러.
-
-    카드 레이아웃:
-      ┌─ 헤더: 제목 · 현재가 · 기준연도 ────────────────────────────┐
-      │  ① PER  │  ② PBR  │  ③ DCF  │  컨센서스(하이라이트)       │
-      └──────────────────────────────────────────────────────────────┘
-
-    각 셀:
-      - 적정주가(원)  +  등락률(현재가 대비 ▲/▼%)
-      - sub1: 산정근거 (avg PER·PBR, FCF PV · TV PV)
-      - sub2: 산식 한 줄 요약
-    """
-    if fv.get("error"):
-        # 비상장·데이터 부족은 조용히 skip
-        skip_msgs = {"비상장 또는 데이터 부족", "ticker 없음 (KS/KQ 모두 시도)"}
-        if fv["error"] not in skip_msgs:
-            st.caption(f"적정주가 산정 불가: {fv['error']}")
-        return
-
-    cur = fv.get("current_price")
-
-    def _upside(fair: float | None) -> str:
-        """현재가 대비 등락률 뱃지 HTML."""
-        if fair is None or cur is None or cur == 0:
-            return ""
-        up  = (fair - cur) / cur * 100
-        sym = "▲" if up >= 0 else "▼"
-        clr = "#16a34a" if up >= 0 else "#dc2626"
-        return (
-            f'<span style="font-size:.68rem;color:{clr};margin-left:4px;">'
-            f'{sym}{abs(up):.1f}%</span>'
-        )
-
-    def _fair_cell(label: str, fair: float | None,
-                   sub1: str = "", sub2: str = "",
-                   highlight: bool = False) -> str:
-        """적정가 셀 HTML 블록."""
-        border = "2px solid #2563eb" if highlight else "1px solid #e2e8f0"
-        bg     = "#eff6ff"           if highlight else "#ffffff"
-        lbl_clr = "#2563eb"          if highlight else "#475569"
-        if fair is None:
-            val_html = (
-                '<div style="font-size:.82rem;color:#94a3b8;margin-top:6px;">산정 불가</div>'
-            )
-        else:
-            val_html = (
-                f'<div style="font-size:1.05rem;font-weight:700;color:#1e293b;margin-top:6px;">'
-                f'{int(fair):,}원{_upside(fair)}</div>'
-            )
-        s1 = (f'<div style="font-size:.63rem;color:#64748b;margin-top:4px;">{sub1}</div>'
-              if sub1 else "")
-        s2 = (f'<div style="font-size:.60rem;color:#94a3b8;margin-top:1px;">{sub2}</div>'
-              if sub2 else "")
-        return (
-            f'<div style="flex:1;min-width:140px;text-align:center;'
-            f'padding:12px 8px;border:{border};border-radius:8px;'
-            f'background:{bg};margin:4px;">'
-            f'<div style="font-size:.68rem;font-weight:600;color:{lbl_clr};">{label}</div>'
-            f'{val_html}{s1}{s2}'
-            f'</div>'
-        )
-
-    cur_html = f'{int(cur):,}원' if cur else "현재가 없음"
-
-    # ① PER 셀 설명
-    per_sub1 = f"과거평균 PER {fv['avg_per']}x" if fv.get("avg_per") else ""
-    per_sub2 = "= 과거평균PER × EPS"
-
-    # ② PBR 셀 설명
-    pbr_sub1 = f"과거평균 PBR {fv['avg_pbr']}x" if fv.get("avg_pbr") else ""
-    pbr_sub2 = "= 과거평균PBR × BPS"
-
-    # ③ DCF 셀 설명 (PV_FCF + PV_TV 표시)
-    dcf_parts: list[str] = []
-    if fv.get("pv_fcf") is not None:
-        dcf_parts.append(f"현금흐름PV {int(fv['pv_fcf']):,}억")
-    if fv.get("pv_tv") is not None:
-        dcf_parts.append(f"잔존가치PV {int(fv['pv_tv']):,}억")
-    dcf_sub1 = " · ".join(dcf_parts)
-    dcf_sub2 = (
-        f"WACC {fv['wacc']*100:.1f}% · g∞ {fv['terminal_g']*100:.1f}%"
-        f" · FCFg {fv['fcf_growth']*100:.1f}% · {fv['proj_years']}년"
-    )
-
-    # ④ 컨센서스 셀 설명
-    valids_n  = sum(1 for v in [fv.get("per_fair"), fv.get("pbr_fair"), fv.get("dcf_fair")]
-                    if v is not None)
-    con_sub1  = "PER + PBR + DCF 단순평균"
-    con_sub2  = f"(유효값 {valids_n}개 평균)" if valids_n < 3 else ""
-
-    st.markdown(
-        f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;'
-        f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px 14px;margin:8px 0 4px 0;">'
-        # 헤더
-        f'<div style="display:flex;align-items:center;justify-content:space-between;'
-        f'margin-bottom:8px;">'
-        f'<span style="font-size:.8rem;font-weight:700;color:#1e293b;">📐 3중 적정주가 산정</span>'
-        f'<span style="font-size:.72rem;color:#64748b;">'
-        f'현재가 <b style="color:#1e293b;">{cur_html}</b>'
-        f'&nbsp;·&nbsp;기준 {fv.get("latest_yr","")}년 재무</span>'
-        f'</div>'
-        # 4개 셀
-        f'<div style="display:flex;flex-wrap:wrap;">'
-        + _fair_cell("① PER 적정주가",  fv.get("per_fair"),  per_sub1, per_sub2)
-        + _fair_cell("② PBR 적정주가",  fv.get("pbr_fair"),  pbr_sub1, pbr_sub2)
-        + _fair_cell("③ DCF 내재가치",  fv.get("dcf_fair"),  dcf_sub1, dcf_sub2)
-        + _fair_cell("컨센서스 (평균)", fv.get("consensus"), con_sub1, con_sub2,
-                     highlight=True)
-        + f'</div></div>',
-        unsafe_allow_html=True,
-    )
 
 
 # ══════════════════════════════════════════
 #  검색 헬퍼
 # ══════════════════════════════════════════
+
 def _on_search_enter() -> None:
     _run_search(st.session_state.get("_search_input", ""))
+
+
 def _run_search(q: str) -> None:
     """검색 실행 — 가장 일치하는 법인을 session_state에 저장."""
     q = (q or "").strip()
@@ -2053,196 +2016,11 @@ def _run_search(q: str) -> None:
     try:
         corps = load_corp_list()
         results = search_corps(q, corps)
-    except requests.exceptions.ConnectionError:
-        st.session_state["selected_corp"] = None
-        st.session_state["_search_no_result"] = ""
-        st.error("DART API 서버에 연결할 수 없습니다. 네트워크 상태를 확인하세요.")
-        return
-    except requests.exceptions.Timeout:
-        st.session_state["selected_corp"] = None
-        st.session_state["_search_no_result"] = ""
-        st.error("DART API 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.")
-        return
-    except requests.exceptions.HTTPError as e:
-        st.session_state["selected_corp"] = None
-        st.session_state["_search_no_result"] = ""
-        code = e.response.status_code if e.response is not None else "?"
-        if code == 401:
-            st.error("DART API 키가 유효하지 않습니다. Streamlit Secrets의 DART_KEY를 확인하세요.")
-        else:
-            st.error(f"DART API 오류 (HTTP {code}): {e}")
-        return
-    except Exception as e:
-        st.session_state["selected_corp"] = None
-        st.session_state["_search_no_result"] = ""
-        st.error(f"기업 목록 조회 중 오류 발생: {e}")
-        return
+    except Exception:
+        results = []
     if results:
-        st.session_state["selected_corp"]     = results[0]
+        st.session_state["selected_corp"]   = results[0]
         st.session_state["_search_no_result"] = ""
     else:
-        st.session_state["selected_corp"]     = None
-        st.session_state["_search_no_result"] = q
-# ══════════════════════════════════════════
-#  메인 UI
-# ══════════════════════════════════════════
-def main() -> None:
-    if not DART_KEY:
-        st.error(
-            "DART API 키가 설정되지 않았습니다.\n\n"
-            "**로컬 실행:** `.streamlit/secrets.toml` 에 `DART_KEY = \"your_key\"` 추가\n\n"
-            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력"
-        )
-        st.stop()
-    # 스티키 헤더
-    st.markdown("""
-    <div style="position:sticky;top:0;z-index:999;
-                background:#fff;border-bottom:1px solid #e2e8f0;
-                box-shadow:0 1px 4px rgba(0,0,0,.06);
-                padding:14px 20px;margin:-1rem -1rem 1.2rem -1rem;
-                display:flex;align-items:center;gap:12px;">
-      <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;
-                  background:linear-gradient(135deg,#2563eb,#7c3aed);
-                  display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
-      <div>
-        <div class="dart-title" style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">
-          기업 주식 시황 및 재무 대시보드</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    col_inp, col_btn = st.columns([5, 1])
-    with col_inp:
-        st.text_input(
-            "",
-            placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
-            key="_search_input",
-            label_visibility="collapsed",
-            on_change=_on_search_enter,
-        )
-    with col_btn:
-        if st.button("🔍 검색", use_container_width=True, key="search_btn"):
-            _run_search(st.session_state.get("_search_input", ""))
-    no_result_q = st.session_state.get("_search_no_result", "")
-    if no_result_q:
-        st.warning(f"'{no_result_q}' 검색 결과가 없습니다.")
-    # 아직 아무 기업도 선택되지 않은 경우 → 안내 화면
-    corp = st.session_state.get("selected_corp")
-    if not corp:
-        st.markdown("""
-        <div style="text-align:center;padding:3rem;color:#768390;">
-          <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
-          <div>회사명 또는 종목코드를 입력하고 검색하세요</div>
-          <div style="font-size:.8rem;margin-top:.5rem;">K-IFRS 기준 최대 15년 재무제표를 불러옵니다</div>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-    # 기업 개요
-    with st.spinner("기업 정보 조회 중..."):
-        ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
-    cls_badge = (
-        f'<span style="background:#eff6ff;color:#2563eb;font-size:.68rem;'
-        f'border-radius:4px;padding:2px 7px;margin-left:8px;font-weight:600;">'
-        f'{ov.get("corp_cls","")}</span>'
-    ) if ov.get("corp_cls") else ""
-    meta_parts = []
-    if ov.get("ceo_nm"):  meta_parts.append(f'<span><b>대표</b> {ov["ceo_nm"]}</span>')
-    if ov.get("est_dt"):  meta_parts.append(f'<span><b>설립</b> {ov["est_dt"]}</span>')
-    if ov.get("acc_mt"):  meta_parts.append(f'<span><b>결산</b> {ov["acc_mt"]}</span>')
-    if ov.get("phn_no"):  meta_parts.append(f'<span><b>전화</b> {ov["phn_no"]}</span>')
-    sep        = '<span style="color:#94a3b8;margin:0 6px;">|</span>'
-    meta_html  = sep.join(meta_parts)
-    addr_html  = f'<div style="font-size:.72rem;color:#64748b;margin-top:4px;">📍 {ov["adres"]}</div>' if ov.get("adres") else ""
-    url_html   = (f'<div style="font-size:.72rem;margin-top:2px;">🌐 '
-                  f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a></div>'
-                  ) if ov.get("hm_url") else ""
-    st.markdown(f"""
-    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-                box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:12px 0;">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:{'8px' if meta_parts else '0'};">
-        <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
-                    padding:4px 12px;font-weight:700;color:#fff;flex-shrink:0;">
-          {corp['corp_name'][:2]}</div>
-        <div style="flex:1;">
-          <div style="font-weight:700;color:#1e293b;font-size:1.05rem;">{corp['corp_name']}{cls_badge}</div>
-          <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">
-            코드: {corp['corp_code']}
-            {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}</div>
-        </div>
-      </div>
-      {f'<div style="font-size:.78rem;color:#475569;margin-top:4px;">{meta_html}</div>' if meta_html else ''}
-      {addr_html}{url_html}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ══ 적정주가 파라미터 & 3중 산정 카드 (환율카드 위) ══
-    if corp.get("stock_code"):
-        with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
-            _vc1, _vc2, _vc3, _vc4 = st.columns(4)
-            with _vc1:
-                _wacc  = st.number_input(
-                    "WACC 할인율 (%)", 1.0, 30.0, 10.0, 0.5, key="val_wacc",
-                    help="가중평균자본비용 — DCF 분모에 적용"
-                ) / 100
-            with _vc2:
-                _tg    = st.number_input(
-                    "영구성장률 g (%)", 0.0, 10.0, 2.0, 0.5, key="val_tg",
-                    help="Terminal Value 계산에 사용하는 무한 성장률 (WACC 미만이어야 함)"
-                ) / 100
-            with _vc3:
-                _fcfg  = st.number_input(
-                    "FCF 성장률 (%)", -10.0, 30.0, 5.0, 0.5, key="val_fcfg",
-                    help="예측기간 N년 동안 적용할 FCF 연간 성장률"
-                ) / 100
-            with _vc4:
-                _years = int(st.number_input(
-                    "예측기간 (년)", 3, 15, 5, 1, key="val_years",
-                    help="DCF 명시적 현금흐름 예측 기간"
-                ))
-        with st.spinner("적정주가 산정 중..."):
-            _fv = compute_fair_values(
-                corp["corp_code"], corp.get("stock_code", ""),
-                ov.get("corp_cls_raw", "Y"),
-                _wacc, _tg, _fcfg, _years, _CACHE_VER,
-            )
-        _render_valuation_card(_fv)
-
-    # 환율 + 미국채 카드
-    md = fetch_market_data()
-    if md and md.get("usd_krw"):
-        st.markdown(
-            f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
-            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 4px 2px;margin:0 0 12px 0;">'
-            f'<div style="display:flex;flex-wrap:wrap;align-items:center;">'
-            + _fx_card_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
-            + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
-            + _fx_card_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
-                + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
-            + f'</div>'
-            f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;padding:0 8px 4px;">'
-            f'기준일 {md["date"]}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-    # ══ 메인 탭 ══
-    tab_stock, tab_sh, tab_fs, tab_news, tab_emp = st.tabs(
-        ["📈 주식", "🏛 주주 현황", "📊 재무제표", "📢 공시 · 뉴스", "👥 직원 현황"]
-    )
-    with tab_stock:
-        try:
-            render_stock_chart(
-                corp.get("stock_code", ""), corp["corp_name"],
-                ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""),
-            )
-        except Exception as e:
-            st.error(f"주식 차트 로딩 오류: {e}")
-    with tab_sh:
-        _render_shareholder_tab(corp.get("corp_code", ""))
-    with tab_fs:
-        _render_fs_tab(corp)
-    with tab_news:
-        _render_news_tab(corp)
-    with tab_emp:
-        _render_employee_tab(corp)
-# ══════════════════════════════════════════
-if __name__ == "__main__":
-    main()
+        st.session_state["selected_corp"]   = None
+        st.session_state["_search_no_result"]
