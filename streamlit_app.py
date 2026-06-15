@@ -255,9 +255,10 @@ def _section_header(title: str, sub: str = "") -> None:
 # ══════════════════════════════════════════
 #  DART API — 기업 목록
 # ══════════════════════════════════════════
-@st.cache_data(ttl=TTL_WEEKLY, show_spinner=False)
+@st.cache_data(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
 def load_corp_list() -> list[dict]:
-    r = requests.get(f"{BASE}/corpCode.xml", params={"crtfc_key": DART_KEY}, timeout=30)
+    r = requests.get(f"{BASE}/corpCode.xml", params={"crtfc_key": DART_KEY},
+                     timeout=(10, 60))   # (connect, read) 분리
     r.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         with z.open("CORPCODE.xml") as f:
@@ -2041,13 +2042,35 @@ def _run_search(q: str) -> None:
     try:
         corps = load_corp_list()
         results = search_corps(q, corps)
-    except Exception:
-        results = []
+    except requests.exceptions.ConnectionError:
+        st.session_state["selected_corp"] = None
+        st.session_state["_search_no_result"] = ""
+        st.error("DART API 서버에 연결할 수 없습니다. 네트워크 상태를 확인하세요.")
+        return
+    except requests.exceptions.Timeout:
+        st.session_state["selected_corp"] = None
+        st.session_state["_search_no_result"] = ""
+        st.error("DART API 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.")
+        return
+    except requests.exceptions.HTTPError as e:
+        st.session_state["selected_corp"] = None
+        st.session_state["_search_no_result"] = ""
+        code = e.response.status_code if e.response is not None else "?"
+        if code == 401:
+            st.error("DART API 키가 유효하지 않습니다. Streamlit Secrets의 DART_KEY를 확인하세요.")
+        else:
+            st.error(f"DART API 오류 (HTTP {code}): {e}")
+        return
+    except Exception as e:
+        st.session_state["selected_corp"] = None
+        st.session_state["_search_no_result"] = ""
+        st.error(f"기업 목록 조회 중 오류 발생: {e}")
+        return
     if results:
-        st.session_state["selected_corp"]   = results[0]
+        st.session_state["selected_corp"]     = results[0]
         st.session_state["_search_no_result"] = ""
     else:
-        st.session_state["selected_corp"]   = None
+        st.session_state["selected_corp"]     = None
         st.session_state["_search_no_result"] = q
 # ══════════════════════════════════════════
 #  메인 UI
@@ -2182,7 +2205,7 @@ def main() -> None:
             + _fx_card_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
             + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
             + _fx_card_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
-            + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
+                + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
             + f'</div>'
             f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;padding:0 8px 4px;">'
             f'기준일 {md["date"]}</div>'
@@ -2200,7 +2223,7 @@ def main() -> None:
                 ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""),
             )
         except Exception as e:
-            st.error(f"주식 차트 딩 오류: {e}")
+            st.error(f"주식 차트 로딩 오류: {e}")
     with tab_sh:
         _render_shareholder_tab(corp.get("corp_code", ""))
     with tab_fs:
