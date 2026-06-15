@@ -1231,6 +1231,170 @@ def _render_per_pbr_chart(yf_data: dict) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _load_fs_data(corp_code: str) -> dict:
+    """재무 데이터 로드 (session_state 캐시 우선)."""
+    cached = st.session_state.get(f"{corp_code}_data")
+    if cached:
+        return cached
+    cfs = fetch_all_years(corp_code, "CFS")
+    ofs = fetch_all_years(corp_code, "OFS")
+    return {**ofs, **cfs} if (cfs and ofs) else (cfs or ofs or {})
+
+
+def _render_ev_ebitda_chart(corp_code: str, yf_data: dict) -> None:
+    """EV/EBITDA 밸류에이션 추이 차트.
+    EV = 시가총액 + 부채총계 − 기말현금  /  EBITDA ≈ 영업이익(EBIT 근사)
+    """
+    _section_header("EV/EBITDA 추이",
+                    "EV = 시가총액 + 부채총계 − 기말현금 · EBITDA ≈ 영업이익 근사")
+
+    mktcap = yf_data.get("mktcap", {})
+    if not mktcap:
+        st.caption("시가총액 데이터가 없어 EV/EBITDA를 계산할 수 없습니다.")
+        return
+
+    with st.spinner("재무 데이터 조회 중..."):
+        fs_data = _load_fs_data(corp_code)
+    if not fs_data:
+        st.caption("재무 데이터를 불러올 수 없어 EV/EBITDA를 계산할 수 없습니다.")
+        return
+
+    ev_ebitda_map: dict[str, float] = {}
+    for yr_str, mc in mktcap.items():
+        if not _is_year_key(yr_str):
+            continue
+        fd = fs_data.get(yr_str)
+        if not fd:
+            continue
+        liabilities = fd["bs"].get("liabilities") or 0
+        cash        = fd["cf"].get("endCash")     or 0
+        op_income   = fd["is"].get("opIncome")
+        if not op_income or op_income <= 0:
+            continue
+        ev = mc + liabilities - cash          # 단위: 억원
+        ev_ebitda_map[yr_str] = round(ev / op_income, 1)
+
+    if not ev_ebitda_map:
+        st.caption("EV/EBITDA를 계산하기 위한 데이터가 충분하지 않습니다.")
+        return
+
+    years_ev = sorted(ev_ebitda_map.keys(), key=int)
+    vals_ev  = [ev_ebitda_map[y] for y in years_ev]
+    avg_ev   = round(sum(vals_ev) / len(vals_ev), 1)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years_ev, y=vals_ev, name="EV/EBITDA",
+        mode="lines+markers+text",
+        line=dict(color=COLORS["purple"], width=2),
+        marker=dict(size=6),
+        text=[str(v) for v in vals_ev],
+        textposition="top center", textfont=dict(size=9, color=COLORS["purple"]),
+    ))
+    fig.add_hline(y=avg_ev, line_dash="dot", line_color="#94a3b8",
+                  annotation_text=f"평균 {avg_ev}x",
+                  annotation_position="bottom right",
+                  annotation_font=dict(size=10, color="#94a3b8"))
+    fig.update_layout(
+        title_text="EV/EBITDA 추이 (배)", title_font_color="#1e293b", title_font_size=12,
+        yaxis=dict(ticksuffix="x", gridcolor="#e2e8f0", tickfont=dict(color="#64748b")),
+        xaxis=dict(type="category", gridcolor="#e2e8f0",
+                   tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+        **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "xaxis")},
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_dcf_calculator(corp_code: str) -> None:
+    """간이 DCF 내재가치 계산기. FCF ≈ 영업현금흐름(OCF) 사용."""
+    _section_header("간이 DCF 내재가치 계산기",
+                    "FCF = 영업현금흐름(OCF) 근사 · 결과는 참고용이며 투자 조언이 아닙니다")
+
+    with st.spinner("재무 데이터 조회 중..."):
+        fs_data = _load_fs_data(corp_code)
+    if not fs_data:
+        st.caption("재무 데이터를 불러올 수 없습니다.")
+        return
+
+    years   = sorted(fs_data.keys())
+    recent  = years[-3:] if len(years) >= 3 else years
+    ocf_vals = [fs_data[y]["cf"].get("opCF")
+                for y in recent if fs_data[y]["cf"].get("opCF")]
+
+    if not ocf_vals:
+        st.caption("현금흐름 데이터가 없어 DCF를 계산할 수 없습니다.")
+        return
+
+    base_fcf = round(sum(ocf_vals) / len(ocf_vals))
+    st.caption(
+        f"기준 FCF: 최근 **{len(ocf_vals)}년** 평균 영업CF "
+        f"= **{base_fcf:,}억원** "
+        f"({', '.join(str(v)+' 억' for v in ocf_vals)})"
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        g1 = st.number_input("성장률 — 향후 5년 (%)", min_value=-20.0, max_value=50.0,
+                             value=8.0, step=0.5, key=f"dcf_g1_{corp_code}") / 100
+    with c2:
+        gt = st.number_input("영구 성장률 (%)", min_value=0.0, max_value=8.0,
+                             value=2.0, step=0.5, key=f"dcf_gt_{corp_code}") / 100
+    with c3:
+        wacc = st.number_input("할인율 — WACC (%)", min_value=1.0, max_value=30.0,
+                               value=10.0, step=0.5, key=f"dcf_wacc_{corp_code}") / 100
+
+    if wacc <= gt:
+        st.warning("할인율(WACC)이 영구 성장률보다 커야 합니다.")
+        return
+
+    # ── DCF 계산 ──
+    fcf    = float(base_fcf)
+    pv_sum = 0.0
+    rows: list[dict] = []
+    for n in range(1, 6):
+        fcf  *= (1 + g1)
+        pv    = fcf / (1 + wacc) ** n
+        pv_sum += pv
+        rows.append({"연도": f"Y+{n}", "예상 FCF": round(fcf), "현재가치 PV": round(pv)})
+
+    terminal_val = rows[-1]["예상 FCF"] * (1 + gt) / (wacc - gt)
+    pv_terminal  = terminal_val / (1 + wacc) ** 5
+    intrinsic    = round(pv_sum + pv_terminal)
+
+    # ── KPI 카드 ──
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        st.metric("DCF 내재가치", f"{intrinsic:,}억원")
+    with k2:
+        st.metric("현금흐름 PV 합계", f"{round(pv_sum):,}억원")
+    with k3:
+        st.metric("잔존가치(Terminal) PV", f"{round(pv_terminal):,}억원")
+
+    # ── FCF / PV 바차트 ──
+    yrs  = [r["연도"]     for r in rows]
+    fcfs = [r["예상 FCF"] for r in rows]
+    pvs  = [r["현재가치 PV"] for r in rows]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="예상 FCF (억원)", x=yrs, y=fcfs,
+                         marker_color=COLORS["blue"], marker_line_width=0,
+                         text=[f"{v:,}" for v in fcfs],
+                         textposition="outside", textfont=dict(size=9)))
+    fig.add_trace(go.Bar(name="현재가치 PV (억원)", x=yrs, y=pvs,
+                         marker_color=COLORS["orange"], marker_line_width=0,
+                         text=[f"{v:,}" for v in pvs],
+                         textposition="outside", textfont=dict(size=9)))
+    fig.update_layout(
+        title_text="연도별 FCF / 현재가치 (억원)",
+        title_font_color="#1e293b", title_font_size=12,
+        barmode="group", **PLOTLY_LAYOUT,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── 상세 테이블 ──
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
 def _render_shareholder_section(corp_code: str) -> None:
     """최대주주 현황 + 변동현황 테이블 렌더링."""
     rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
@@ -1546,6 +1710,8 @@ def render_stock_chart(stock_code: str, corp_name: str,
         yf_data = _render_mktcap_chart(stock_code, corp_cls, corp_code)
         if yf_data and "__error__" not in yf_data:
             _render_per_pbr_chart(yf_data)
+            _render_ev_ebitda_chart(corp_code, yf_data)
+            _render_dcf_calculator(corp_code)
 
         _render_shareholder_section(corp_code)
         _render_large_holdings(corp_code)
@@ -1857,152 +2023,4 @@ def _run_search(q: str) -> None:
         st.session_state["_search_no_result"] = ""
     else:
         st.session_state["selected_corp"]   = None
-        st.session_state["_search_no_result"] = q
-
-
-# ══════════════════════════════════════════
-#  메인 UI
-# ══════════════════════════════════════════
-
-def main() -> None:
-    if not DART_KEY:
-        st.error(
-            "DART API 키가 설정되지 않았습니다.\n\n"
-            "**로컬 실행:** `.streamlit/secrets.toml` 에 `DART_KEY = \"your_key\"` 추가\n\n"
-            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력"
-        )
-        st.stop()
-
-    # 스티키 헤더
-    st.markdown("""
-    <div style="position:sticky;top:0;z-index:999;
-                background:#fff;border-bottom:1px solid #e2e8f0;
-                box-shadow:0 1px 4px rgba(0,0,0,.06);
-                padding:14px 20px;margin:-1rem -1rem 1.2rem -1rem;
-                display:flex;align-items:center;gap:12px;">
-      <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;
-                  background:linear-gradient(135deg,#2563eb,#7c3aed);
-                  display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
-      <div>
-        <div class="dart-title" style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">
-          기업 주식 시황 및 재무 대시보드</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    col_inp, col_btn = st.columns([5, 1])
-    with col_inp:
-        st.text_input(
-            "",
-            placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
-            key="_search_input",
-            label_visibility="collapsed",
-            on_change=_on_search_enter,
-        )
-    with col_btn:
-        if st.button("🔍 검색", use_container_width=True, key="search_btn"):
-            _run_search(st.session_state.get("_search_input", ""))
-
-    no_result_q = st.session_state.get("_search_no_result", "")
-    if no_result_q:
-        st.warning(f"'{no_result_q}' 검색 결과가 없습니다.")
-
-    # 아직 아무 기업도 선택되지 않은 경우 → 안내 화면
-    corp = st.session_state.get("selected_corp")
-    if not corp:
-        st.markdown("""
-        <div style="text-align:center;padding:3rem;color:#768390;">
-          <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
-          <div>회사명 또는 종목코드를 입력하고 검색하세요</div>
-          <div style="font-size:.8rem;margin-top:.5rem;">K-IFRS 기준 최대 15년 재무제표를 불러옵니다</div>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-
-    # 기업 개요
-    with st.spinner("기업 정보 조회 중..."):
-        ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
-
-    cls_badge = (
-        f'<span style="background:#eff6ff;color:#2563eb;font-size:.68rem;'
-        f'border-radius:4px;padding:2px 7px;margin-left:8px;font-weight:600;">'
-        f'{ov.get("corp_cls","")}</span>'
-    ) if ov.get("corp_cls") else ""
-
-    meta_parts = []
-    if ov.get("ceo_nm"):  meta_parts.append(f'<span><b>대표</b> {ov["ceo_nm"]}</span>')
-    if ov.get("est_dt"):  meta_parts.append(f'<span><b>설립</b> {ov["est_dt"]}</span>')
-    if ov.get("acc_mt"):  meta_parts.append(f'<span><b>결산</b> {ov["acc_mt"]}</span>')
-    if ov.get("phn_no"):  meta_parts.append(f'<span><b>전화</b> {ov["phn_no"]}</span>')
-    sep        = '<span style="color:#94a3b8;margin:0 6px;">|</span>'
-    meta_html  = sep.join(meta_parts)
-    addr_html  = f'<div style="font-size:.72rem;color:#64748b;margin-top:4px;">📍 {ov["adres"]}</div>' if ov.get("adres") else ""
-    url_html   = (f'<div style="font-size:.72rem;margin-top:2px;">🌐 '
-                  f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a></div>'
-                  ) if ov.get("hm_url") else ""
-
-    st.markdown(f"""
-    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-                box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:12px 0;">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:{'8px' if meta_parts else '0'};">
-        <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
-                    padding:4px 12px;font-weight:700;color:#fff;flex-shrink:0;">
-          {corp['corp_name'][:2]}</div>
-        <div style="flex:1;">
-          <div style="font-weight:700;color:#1e293b;font-size:1.05rem;">{corp['corp_name']}{cls_badge}</div>
-          <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">
-            코드: {corp['corp_code']}
-            {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}</div>
-        </div>
-      </div>
-      {f'<div style="font-size:.78rem;color:#475569;margin-top:4px;">{meta_html}</div>' if meta_html else ''}
-      {addr_html}{url_html}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 환율 + 미국채 카드
-    md = fetch_market_data()
-    if md and md.get("usd_krw"):
-        st.markdown(
-            f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
-            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 4px 2px;margin:0 0 12px 0;">'
-            f'<div style="display:flex;flex-wrap:wrap;align-items:center;">'
-            + _fx_card_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
-            + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
-            + _fx_card_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
-            + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
-            + f'</div>'
-            f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;padding:0 8px 4px;">'
-            f'기준일 {md["date"]}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    # ══ 메인 탭 ══
-    tab_stock, tab_fs, tab_news, tab_emp = st.tabs(
-        ["📈 주식", "📊 재무제표", "📢 공시 · 뉴스", "👥 직원 현황"]
-    )
-
-    with tab_stock:
-        try:
-            render_stock_chart(
-                corp.get("stock_code", ""), corp["corp_name"],
-                ov.get("corp_cls_raw", "Y"), corp_code=corp.get("corp_code", ""),
-            )
-        except Exception as e:
-            st.error(f"주식 차트 로딩 오류: {e}")
-
-    with tab_fs:
-        _render_fs_tab(corp)
-
-    with tab_news:
-        _render_news_tab(corp)
-
-    with tab_emp:
-        _render_employee_tab(corp)
-
-
-
-# ══════════════════════════════════════════
-if __name__ == "__main__":
-    main()
+        st.session_state["_search_no_result"]
