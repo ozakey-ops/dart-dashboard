@@ -34,9 +34,9 @@ except ImportError:
 #  설정 상수
 # ══════════════════════════════════════════
 try:
-    DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", ""))
+    DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", "")) or "901de77da059b85e095a99ab9f2baf3264f7281f"
 except Exception:
-    DART_KEY = os.environ.get("DART_KEY", "")
+    DART_KEY = os.environ.get("DART_KEY", "") or "901de77da059b85e095a99ab9f2baf3264f7281f"
 BASE         = "https://opendart.fss.or.kr/api"
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
@@ -2243,6 +2243,6 @@ def main() -> None:
         _render_news_tab(corp)
     with tab_emp:
         _render_employee_tab(corp)
-# ══════════════════════════════════════════
+# ════════════════════════
 if __name__ == "__main__":
     main()
