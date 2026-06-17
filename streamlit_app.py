@@ -10,6 +10,7 @@
 # ══════════════════════════════════════════
 import io
 import os
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
@@ -51,7 +52,7 @@ TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
-_CACHE_VER = 22
+_CACHE_VER = 23
 # 계정과목 키워드 매핑
 ACC: dict[str, list[str]] = {
     "assets":      ["자산총계"],
@@ -402,6 +403,12 @@ def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
                 # EBITDA 구성: 영업활동CF 조정항목에서 D&A 추출
                 "depre":   find_amount(cf, ACC["depreciation"]),
                 "amort":   find_amount(cf, ACC["amortization"]),
+                # 디버그용: CF 전체 계정명 목록 (D&A 매칭 실패 시 확인용)
+                "_cf_accounts": [
+                    (item.get("account_nm", ""), item.get("thstrm_amount", ""))
+                    for item in cf
+                    if item.get("account_nm")
+                ],
             },
         }
         has_data = any(v is not None for sec in result.values() for v in sec.values())
@@ -960,8 +967,20 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
             today_price = float(t.fast_info.last_price)
         except Exception:
             pass
-        hist = t.history(period="12y", interval="1mo", auto_adjust=True)
-        if hist.empty:
+        hist = None
+        for _attempt in range(3):
+            try:
+                hist = t.history(period="12y", interval="1mo", auto_adjust=True)
+                break
+            except Exception as _e:
+                _emsg = str(_e)
+                if _attempt < 2 and any(
+                    k in _emsg for k in ("Too Many", "Rate", "429", "limit")
+                ):
+                    time.sleep(3 * (_attempt + 1))
+                else:
+                    return {"__error__": _emsg}
+        if hist is None or hist.empty:
             return {"__error__": "주가 데이터 없음"}
         hist.index = pd.to_datetime(hist.index).tz_localize(None)
         cur_year = datetime.now().year
@@ -1803,6 +1822,39 @@ def _render_fs_tab(corp: dict) -> None:
                 "EBITDA":        fmt(ebitda_v),
             })
         st.dataframe(rows, hide_index=True, use_container_width=True)
+
+        # ── D&A "-" 시 DART CF 원본 계정명 확인 expander ──────────────
+        if not has_da:
+            # 가장 최근 연도 CF accounts 가져오기
+            recent_cf_accounts: list[tuple[str, str]] = []
+            for y in reversed(years):
+                accs = data[y]["cf"].get("_cf_accounts", [])
+                if accs:
+                    recent_cf_accounts = accs
+                    _debug_year = y
+                    break
+            if recent_cf_accounts:
+                with st.expander(
+                    "⚠️ 감가상각비 데이터 없음 — DART CF 계정명 확인",
+                    expanded=False,
+                ):
+                    st.caption(
+                        f"**{_debug_year}년** DART 현금흐름표 계정명 목록입니다. "
+                        "감가상각 관련 계정을 확인해 알려주시면 추가하겠습니다."
+                    )
+                    # 감가상각 관련 키워드로 강조
+                    _DA_KEYWORDS = ("상각", "감가", "depreci", "amort")
+                    highlighted, others = [], []
+                    for nm, amt in recent_cf_accounts:
+                        if any(k in nm for k in _DA_KEYWORDS):
+                            highlighted.append({"계정명": nm, "당기금액": amt, "⚑": "✅ D&A 의심"})
+                        else:
+                            others.append({"계정명": nm, "당기금액": amt, "⚑": ""})
+                    if highlighted:
+                        st.markdown("**감가상각 관련 의심 계정:**")
+                        st.dataframe(highlighted, hide_index=True, use_container_width=True)
+                    st.markdown("**전체 CF 계정 목록:**")
+                    st.dataframe(highlighted + others, hide_index=True, use_container_width=True)
 # ══════════════════════════════════════════
 #  공시·뉴스 탭
 # ══════════════════════════════════════════
@@ -2383,7 +2435,6 @@ def main() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    # ══ 적정주가 파라미터 & 3중 산정 카드 (환율카드 위) ══
     if corp.get("stock_code"):
         with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
             _vc1, _vc2, _vc3, _vc4 = st.columns(4)
@@ -2419,6 +2470,8 @@ def main() -> None:
     md = fetch_market_data()
     if md and md.get("usd_krw"):
         st.markdown(
+            f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
+            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:4px 4px 2px;margin:0 0 12px 0;">'
             f'<div style="display:flex;flex-wrap:wrap;align-items:center;">'
             + _fx_card_item("원 / 달러",       md["usd_krw"],    md.get("usd_krw_chg"),    "원", ".1f")
             + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
