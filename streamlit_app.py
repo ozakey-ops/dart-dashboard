@@ -52,7 +52,7 @@ TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
-_CACHE_VER = 23
+_CACHE_VER = 24
 # 계정과목 키워드 매핑
 ACC: dict[str, list[str]] = {
     "assets":      ["자산총계"],
@@ -403,15 +403,25 @@ def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
                 # EBITDA 구성: 영업활동CF 조정항목에서 D&A 추출
                 "depre":   find_amount(cf, ACC["depreciation"]),
                 "amort":   find_amount(cf, ACC["amortization"]),
-                # 디버그용: CF 전체 계정명 목록 (D&A 매칭 실패 시 확인용)
+                # 디버그용: CF 전체 계정명 + 금액 필드 (D&A 매칭 실패 시 확인용)
                 "_cf_accounts": [
-                    (item.get("account_nm", ""), item.get("thstrm_amount", ""))
+                    {
+                        "계정명":           item.get("account_nm", ""),
+                        "thstrm_amount":   item.get("thstrm_amount",     ""),
+                        "thstrm_add_amt":  item.get("thstrm_add_amount", ""),
+                    }
                     for item in cf
                     if item.get("account_nm")
                 ],
             },
         }
-        has_data = any(v is not None for sec in result.values() for v in sec.values())
+        # "_"로 시작하는 메타 필드(디버그용)는 제외하고 실제 재무 필드만 체크
+        has_data = any(
+            v is not None
+            for sec in result.values()
+            for k, v in sec.items()
+            if not k.startswith("_")
+        )
         return result if has_data else None
     except Exception:
         return None
@@ -1503,7 +1513,9 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
     # ───────────────────────────────────────────────────────────────────
 
     fig.update_layout(
-        **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "xaxis", "margin", "height")},
+        # "legend"도 명시적으로 덮어쓰므로 PLOTLY_LAYOUT spread 에서 제외 (중복 키 에러 방지)
+        **{k: v for k, v in PLOTLY_LAYOUT.items()
+           if k not in ("yaxis", "xaxis", "margin", "height", "legend")},
         barmode="group",
         margin=dict(l=10, r=10, t=115, b=10),
         height=360,
@@ -1839,17 +1851,24 @@ def _render_fs_tab(corp: dict) -> None:
                     expanded=False,
                 ):
                     st.caption(
-                        f"**{_debug_year}년** DART 현금흐름표 계정명 목록입니다. "
-                        "감가상각 관련 계정을 확인해 알려주시면 추가하겠습니다."
+                        f"**{_debug_year}년** DART 현금흐름표 원본 계정 목록입니다. "
+                        "감가상각 관련 계정명을 확인해 알려주시면 ACC dict에 추가하겠습니다. "
+                        "thstrm_amount / thstrm_add_amt 모두 비어 있으면 DART API 자체 미제공입니다."
                     )
-                    # 감가상각 관련 키워드로 강조
                     _DA_KEYWORDS = ("상각", "감가", "depreci", "amort")
                     highlighted, others = [], []
-                    for nm, amt in recent_cf_accounts:
+                    for row in recent_cf_accounts:
+                        nm = row.get("계정명", "")
+                        entry = {
+                            "계정명":          nm,
+                            "thstrm_amount":   row.get("thstrm_amount",  ""),
+                            "thstrm_add_amt":  row.get("thstrm_add_amt", ""),
+                            "비고": "✅ D&A 의심" if any(k in nm for k in _DA_KEYWORDS) else "",
+                        }
                         if any(k in nm for k in _DA_KEYWORDS):
-                            highlighted.append({"계정명": nm, "당기금액": amt, "⚑": "✅ D&A 의심"})
+                            highlighted.append(entry)
                         else:
-                            others.append({"계정명": nm, "당기금액": amt, "⚑": ""})
+                            others.append(entry)
                     if highlighted:
                         st.markdown("**감가상각 관련 의심 계정:**")
                         st.dataframe(highlighted, hide_index=True, use_container_width=True)
@@ -2434,6 +2453,37 @@ def main() -> None:
       {addr_html}{url_html}
     </div>
     """, unsafe_allow_html=True)
+
+    if corp.get("stock_code"):
+        with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
+            _vc1, _vc2, _vc3, _vc4 = st.columns(4)
+            with _vc1:
+                _wacc  = st.number_input(
+                    "WACC 할인율 (%)", 1.0, 30.0, 10.0, 0.5, key="val_wacc",
+                    help="가중평균자본비용 — DCF 분모에 적용"
+                ) / 100
+            with _vc2:
+                _tg    = st.number_input(
+                    "영구성장률 g (%)", 0.0, 10.0, 2.0, 0.5, key="val_tg",
+                    help="Terminal Value 계산에 사용하는 무한 성장률 (WACC 미만이어야 함)"
+                ) / 100
+            with _vc3:
+                _fcfg  = st.number_input(
+                    "FCF 성장률 (%)", -10.0, 30.0, 5.0, 0.5, key="val_fcfg",
+                    help="예측기간 N년 동안 적용할 FCF 연간 성장률"
+                ) / 100
+            with _vc4:
+                _years = int(st.number_input(
+                    "예측기간 (년)", 3, 15, 5, 1, key="val_years",
+                    help="DCF 명시적 현금흐름 예측 기간"
+                ))
+        with st.spinner("적정주가 산정 중..."):
+            _fv = compute_fair_values(
+                corp["corp_code"], corp.get("stock_code", ""),
+                ov.get("corp_cls_raw", "Y"),
+                _wacc, _tg, _fcfg, _years, _CACHE_VER,
+            )
+        _render_valuation_card(_fv)
 
     if corp.get("stock_code"):
         with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
