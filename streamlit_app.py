@@ -1622,24 +1622,86 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
     EV = 시가총액 + 순부채(차입금합계 - 현금)
     EBITDA = 영업이익 + 감가상각비 + 무형자산상각비
     """
+    mktcap = yf_data.get("mktcap", {})
+    if not mktcap or not corp_code:
+        return
+
+    fin: dict[str, dict] = fetch_all_years(corp_code, "CFS", _ver=_CACHE_VER)
+    if not fin:
+        fin = fetch_all_years(corp_code, "OFS", _ver=_CACHE_VER)
+    if not fin:
+        return
+
+    years_sorted = sorted(
+        set(mktcap.keys()) & set(fin.keys()),
+        key=lambda y: int(y),
+    )
+    if not years_sorted:
+        return
+
     with st.container(border=True):
-        mktcap = yf_data.get("mktcap", {})
-        if not mktcap or not corp_code:
-            return
-
-        fin: dict[str, dict] = fetch_all_years(corp_code, "CFS", _ver=_CACHE_VER)
-        if not fin:
-            fin = fetch_all_years(corp_code, "OFS", _ver=_CACHE_VER)
-        if not fin:
-            return
-
-        years_sorted = sorted(
-            set(mktcap.keys()) & set(fin.keys()),
-            key=lambda y: int(y),
+        _section_header(
+            "EV / EBITDA 추이",
+            "EV = 시가총액 + 순부채(차입금 − 현금) · EBITDA = 영업이익 + 감가상각비 + 무형자산상각비 (억 원 / 배)",
         )
-        if not years_sorted:
-            return
 
+        # ── 정의 카드 ──────────────────────────────────────────────────────────
+        st.markdown(
+            '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
+            'padding:10px 16px;margin-bottom:8px;font-size:.79rem;color:#1e293b;">'
+            '<b>EV/EBITDA</b> — 기업가치(EV)가 EBITDA의 몇 배인지 나타내는 밸류에이션 지표. '
+            '낮을수록 상대적 저평가.<br>'
+            '<span style="color:#475569;">'
+            '&nbsp;• <b>EV</b> (Enterprise Value) = 시가총액 + 순부채 (차입금 합계 − 현금및현금성자산)<br>'
+            '&nbsp;• <b>EBITDA</b> = 영업이익 + 감가상각비 (D, Depreciation) + 무형자산상각비 (A, Amortization)<br>'
+            '&nbsp;• 자본구조·세율·감가상각 정책 차이를 제거해 기업 간 수익성을 동일 기준으로 비교할 때 활용'
+            '</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── D&A 누락 연도 확인 ────────────────────────────────────────────────
+        _missing_da = [
+            y for y in years_sorted
+            if fin.get(y, {}).get("cf", {}).get("depre") is None
+            and fin.get(y, {}).get("cf", {}).get("amort") is None
+        ]
+
+        # ── D&A 입력 섹션 (누락 시) ───────────────────────────────────────────
+        _da_overrides: dict[str, tuple[int | None, int | None]] = {}
+        if _missing_da:
+            _miss_yrs = ", ".join(_missing_da[-3:])
+            st.markdown(
+                f'<div style="padding:6px 10px;background:#fef9c3;border:1px solid #fde047;'
+                f'border-radius:8px;font-size:.75rem;color:#854d0e;margin-bottom:4px;">'
+                f'⚠️ <b>감가상각비(D) · 무형자산상각비(A) 데이터 없음</b> — {_miss_yrs}년<br>'
+                f'<span style="font-size:.70rem;">DART API에서 해당 항목이 개별 제공되지 않습니다. '
+                f'아래에서 직접 입력하면 EBITDA 계산에 반영됩니다.</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            # 최근 누락 연도만 입력 칸 표시 (최대 최근 1개 연도)
+            _recent = _missing_da[-1]
+            _ci1, _ci2 = st.columns(2)
+            _dep_v = _ci1.number_input(
+                f"📥 감가상각비 D ({_recent}년, 억원)",
+                min_value=0, step=100,
+                key=f"ev_da_d_{corp_code}_{_recent}",
+                help="유형자산·사용권자산 감가상각비 합계 (억원 단위)",
+            )
+            _amt_v = _ci2.number_input(
+                f"📥 무형자산상각비 A ({_recent}년, 억원)",
+                min_value=0, step=10,
+                key=f"ev_da_a_{corp_code}_{_recent}",
+                help="무형자산 상각비 (억원 단위)",
+            )
+            if _dep_v > 0 or _amt_v > 0:
+                _da_overrides[_recent] = (
+                    int(_dep_v) if _dep_v > 0 else None,
+                    int(_amt_v) if _amt_v > 0 else None,
+                )
+
+        # ── EV / EBITDA 계산 (사용자 입력값 반영) ─────────────────────────────
         ev_vals:     list[float | None] = []
         ebitda_vals: list[float | None] = []
         ratio_vals:  list[float | None] = []
@@ -1656,6 +1718,10 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
             depre     = cf.get("depre")
             amort     = cf.get("amort")
 
+            # 사용자 직접 입력값 우선 적용
+            if depre is None and y in _da_overrides:
+                depre, amort = _da_overrides[y]
+
             if op_income is not None or depre is not None or amort is not None:
                 ebitda = (op_income or 0) + (depre or 0) + (amort or 0)
             else:
@@ -1669,29 +1735,10 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
             ratio_vals.append(ratio)
 
         if not any(r is not None for r in ratio_vals):
+            st.caption("EV/EBITDA 비율을 계산할 수 없습니다 (EBITDA = 0 또는 데이터 부족).")
             return
 
-        _section_header(
-            "EV / EBITDA 추이",
-            "EV = 시가총액 + 순부채(차입금 − 현금) · EBITDA = 영업이익 + 감가상각비 + 무형자산상각비 (억 원 / 배)",
-        )
-
-        # ── 정의 카드 (차트 밖 HTML) ──────────────────────────────────────────────
-        st.markdown(
-            '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
-            'padding:10px 16px;margin-bottom:6px;font-size:.79rem;color:#1e293b;">'
-            '<b>EV/EBITDA</b> — 기업가치(EV)가 EBITDA의 몇 배인지 나타내는 밸류에이션 지표. '
-            '낮을수록 상대적 저평가.<br>'
-            '<span style="color:#475569;">'
-            '&nbsp;• <b>EV</b> (Enterprise Value) = 시가총액 + 순부채 (차입금 합계 − 현금및현금성자산)<br>'
-            '&nbsp;• <b>EBITDA</b> = 영업이익 + 감가상각비 (D, Depreciation) + 무형자산상각비 (A, Amortization)<br>'
-            '&nbsp;• 자본구조·세율·감가상각 정책 차이를 제거해 기업 간 수익성을 동일 기준으로 비교할 때 활용'
-            '</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-        # ── KPI 요약 카드 ──────────────────────────────────────────────────────────
+        # ── KPI 요약 카드 ──────────────────────────────────────────────────────
         latest_idx = len(years_sorted) - 1
         prev_idx   = latest_idx - 1 if latest_idx > 0 else None
         ly         = years_sorted[latest_idx]
@@ -1727,7 +1774,7 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
             )
 
         st.markdown(
-            '<div style="display:flex;flex-wrap:wrap;margin:0 0 4px;">'
+            '<div style="display:flex;flex-wrap:wrap;margin:4px 0;">'
             + _kc(f"EV ({ly})",      _fmt_억(ev_now), _yoy(ev_now, ev_prev))
             + _kc(f"EBITDA ({ly})",  _fmt_억(eb_now), _yoy(eb_now, eb_prev))
             + _kc(f"EV/EBITDA ({ly})",
@@ -1738,7 +1785,7 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
             unsafe_allow_html=True,
         )
 
-        # ── Plotly 차트 (annotation 없음, 막대 레이블 제거 → hover만) ─────────────
+        # ── Plotly 차트 ────────────────────────────────────────────────────────
         fig = go.Figure()
 
         fig.add_trace(go.Bar(
@@ -1779,8 +1826,8 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
             **{k: v for k, v in PLOTLY_LAYOUT.items()
                if k not in ("yaxis", "xaxis", "margin", "height", "legend")},
             barmode="group",
-            margin=dict(l=10, r=10, t=40, b=10),
-            height=320,
+            margin=dict(l=4, r=4, t=20, b=4),
+            height=300,
             xaxis=dict(type="category", gridcolor="#e2e8f0",
                        tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
             yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
@@ -2640,6 +2687,110 @@ def _run_search(q: str) -> None:
 # ══════════════════════════════════════════
 #  메인 UI
 # ══════════════════════════════════════════
+def main() -> None:
+    if not DART_KEY:
+        st.error(
+            "DART API 키가 설정되지 않았습니다.\n\n"
+            "**로컬 실행:** `.streamlit/secrets.toml` 에 `DART_KEY = \"your_key\"` 추가\n\n"
+            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력"
+        )
+        st.stop()
+    # 스티키 헤더
+    st.markdown(
+        """
+        <style>
+        .stickytop { position: sticky; top: 0; z-index: 999; background: #f8fafc;
+                     padding: 8px 0 6px; border-bottom: 1px solid #e2e8f0; margin-bottom: 8px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container():
+        st.markdown('<div class="stickytop">', unsafe_allow_html=True)
+        col_logo, col_search, col_btn = st.columns([1, 5, 1])
+        with col_logo:
+            st.markdown(
+                '<span class="dart-title" style="font-size:1.1rem;font-weight:800;'
+                'color:#2563eb;white-space:nowrap;">📊 DART 기업 분석</span>',
+                unsafe_allow_html=True,
+            )
+        with col_search:
+            st.text_input(
+                "기업 검색",
+                placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
+                key="_search_input",
+                on_change=_on_search_enter,
+                label_visibility="collapsed",
+            )
+        with col_btn:
+            if st.button("검색", use_container_width=True):
+                _run_search(st.session_state.get("_search_input", ""))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    corp = st.session_state.get("selected_corp")
+    no_result_q = st.session_state.get("_search_no_result", "")
+    if no_result_q:
+        st.warning(f"검색 결과가 없습니다: **{no_result_q}**")
+    if not corp:
+        st.info("회사명 또는 종목코드를 입력하여 검색하세요.")
+        return
+
+    ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
+
+    # 회사 정보 카드
+    st.markdown(
+        f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
+        f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:0 0 10px 0;">'
+        f'<div style="display:flex;align-items:baseline;gap:10px;">'
+        f'<span style="font-size:1.25rem;font-weight:800;color:#1e293b;">{corp["corp_name"]}</span>'
+        + (f'<span style="font-size:.82rem;color:#2563eb;font-weight:600;">{corp.get("stock_code","")}</span>'
+           if corp.get("stock_code") else "")
+        + (f'<span style="font-size:.75rem;color:#64748b;">{ov.get("cls_label","")}</span>'
+           if ov.get("cls_label") else "")
+        + f'</div>'
+        + (f'<div style="font-size:.75rem;color:#475569;margin-top:4px;">{ov.get("sector","")}'
+           + (f' &nbsp;|&nbsp; {ov.get("product","")}' if ov.get("product") else "")
+           + f'</div>' if ov.get("sector") else "")
+        + (f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">'
+           + "  &nbsp;|&nbsp;  ".join(filter(None, [
+               ov.get("est_dt",""), ov.get("acc_mt",""), ov.get("adres",""),
+               f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a>'
+               if ov.get("hm_url") else "",
+           ])) + f'</div>' if any(ov.get(k) for k in ("est_dt","acc_mt","adres","hm_url")) else "")
+        + f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if corp.get("stock_code"):
+        with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
+            _vc1, _vc2, _vc3, _vc4 = st.columns(4)
+            with _vc1:
+                _wacc  = st.number_input(
+                    "WACC 할인율 (%)", 1.0, 30.0, 10.0, 0.5, key="val_wacc",
+                    help="가중평균자본비용 — DCF 분모에 적용"
+                ) / 100
+            with _vc2:
+                _tg    = st.number_input(
+                    "영구성장률 g (%)", 0.0, 10.0, 2.0, 0.5, key="val_tg",
+                    help="Terminal Value 계산에 사용하는 무한 성장률 (WACC 미만이어야 함)"
+                ) / 100
+            with _vc3:
+                _fcfg  = st.number_input(
+                    "FCF 성장률 (%)", -10.0, 30.0, 5.0, 0.5, key="val_fcfg",
+                    help="예측기간 N년 동안 적용할 FCF 연간 성장률"
+                ) / 100
+            with _vc4:
+                _years = int(st.number_input(
+                    "예측기간 (년)", 3, 15, 5, 1, key="val_years",
+                    help="DCF 명시적 현금흐름 예측 기간"
+                ))
+        with st.spinner("적정주가 산정 중..."):
+            _fv = compute_fair_values(
+                corp["corp_code"], corp.get("stock_code", ""),
+                ov.get("corp_cls_raw", "Y"),
+                _wacc, _tg, _fcfg, _years, _CACHE_VER,
+            )
+        _render_valuation_card(_fv)
 def main() -> None:
     if not DART_KEY:
         st.error(
