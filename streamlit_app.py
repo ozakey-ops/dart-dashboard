@@ -198,6 +198,15 @@ st.markdown("""
       flex: none !important;
     }
   }
+  /* 차트 섹션 카드 래퍼 */
+  div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 12px !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06) !important;
+    padding: 12px 16px !important;
+    margin-bottom: 10px !important;
+  }
 </style>
 """, unsafe_allow_html=True)
 # ══════════════════════════════════════════
@@ -1284,159 +1293,161 @@ def kpi_card(label: str, cur, prev, is_pct: bool = False, invert: bool = False) 
 #  주식 탭 — 서브 렌더러
 # ══════════════════════════════════════════
 def _render_mktcap_chart(stock_code: str, corp_cls: str, corp_code: str) -> dict:
-    _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
     yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_CACHE_VER)
-    if "__error__" in yf_data:
-        st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
-        return yf_data
-    mktcap = yf_data.get("mktcap", {})
-    if not mktcap:
-        st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
-        return yf_data
-    cur_yr_str = str(datetime.now().year)
-    years_mc   = sorted(mktcap.keys())
-    vals_mc    = [mktcap[y] for y in years_mc]
+    with st.container(border=True):
+        _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
+        if "__error__" in yf_data:
+            st.caption(f"시가총액 데이터를 가져올 수 없습니다: {yf_data['__error__']}")
+            return yf_data
+        mktcap = yf_data.get("mktcap", {})
+        if not mktcap:
+            st.caption("시가총액을 계산하기 위한 데이터가 부족합니다 (발행주식수 미확인).")
+            return yf_data
+        cur_yr_str = str(datetime.now().year)
+        years_mc   = sorted(mktcap.keys())
+        vals_mc    = [mktcap[y] for y in years_mc]
 
-    # ── KPI 요약 카드 ──────────────────────────────────────────────────────────
-    def _fmt_mc(v):
-        if v is None: return "-"
-        return f"{v/10_000:.1f}조" if v >= 10_000 else f"{int(v):,}억"
+        # ── KPI 요약 카드 ────────────────────────────────────────────────────
+        def _fmt_mc(v):
+            if v is None: return "-"
+            return f"{v/10_000:.1f}조" if v >= 10_000 else f"{int(v):,}억"
 
-    latest_mc = vals_mc[-1] if vals_mc else None
-    prev_mc   = vals_mc[-2] if len(vals_mc) >= 2 else None
-    max_idx   = max(range(len(vals_mc)), key=lambda i: vals_mc[i])
-    min_idx   = min(range(len(vals_mc)), key=lambda i: vals_mc[i])
+        latest_mc = vals_mc[-1] if vals_mc else None
+        prev_mc   = vals_mc[-2] if len(vals_mc) >= 2 else None
+        max_idx   = max(range(len(vals_mc)), key=lambda i: vals_mc[i])
+        min_idx   = min(range(len(vals_mc)), key=lambda i: vals_mc[i])
 
-    mc_sub = ""
-    if latest_mc and prev_mc and prev_mc > 0:
-        chg = (latest_mc - prev_mc) / prev_mc * 100
-        sym = "▲" if chg >= 0 else "▼"
-        clr = "#dc2626" if chg >= 0 else "#2563eb"
-        mc_sub = f'<span style="color:{clr};">{sym}{abs(chg):.1f}%</span> vs {years_mc[-2]}'
+        mc_sub = ""
+        if latest_mc and prev_mc and prev_mc > 0:
+            chg = (latest_mc - prev_mc) / prev_mc * 100
+            sym = "▲" if chg >= 0 else "▼"
+            clr = "#dc2626" if chg >= 0 else "#2563eb"
+            mc_sub = f'<span style="color:{clr};">{sym}{abs(chg):.1f}%</span> vs {years_mc[-2]}'
 
-    def _kc(label, value, sub="", hi=False):
-        bg  = "#eff6ff" if hi else "#f8fafc"
-        bdr = "2px solid #2563eb" if hi else "1px solid #e2e8f0"
-        lc  = "#2563eb" if hi else "#64748b"
-        return (
-            f'<div style="flex:1;min-width:120px;text-align:center;padding:10px 8px;'
-            f'border:{bdr};border-radius:8px;background:{bg};margin:3px;">'
-            f'<div style="font-size:.65rem;color:{lc};font-weight:500;">{label}</div>'
-            f'<div style="font-size:.98rem;font-weight:700;color:#1e293b;margin-top:4px;">{value}</div>'
-            f'<div style="font-size:.61rem;color:#94a3b8;margin-top:2px;">{sub}</div>'
-            f'</div>'
+        def _kc(label, value, sub="", hi=False):
+            bg  = "#eff6ff" if hi else "#f8fafc"
+            bdr = "2px solid #2563eb" if hi else "1px solid #e2e8f0"
+            lc  = "#2563eb" if hi else "#64748b"
+            return (
+                f'<div style="flex:1;min-width:120px;text-align:center;padding:10px 8px;'
+                f'border:{bdr};border-radius:8px;background:{bg};margin:3px;">'
+                f'<div style="font-size:.65rem;color:{lc};font-weight:500;">{label}</div>'
+                f'<div style="font-size:.98rem;font-weight:700;color:#1e293b;margin-top:4px;">{value}</div>'
+                f'<div style="font-size:.61rem;color:#94a3b8;margin-top:2px;">{sub}</div>'
+                f'</div>'
+            )
+
+        st.markdown(
+            '<div style="display:flex;flex-wrap:wrap;margin:0 0 8px;">'
+            + _kc(f"시가총액 ({years_mc[-1]})", _fmt_mc(latest_mc), mc_sub, hi=True)
+            + _kc(f"최고 ({years_mc[max_idx]})", _fmt_mc(vals_mc[max_idx]), "기간 내 최고")
+            + _kc(f"최저 ({years_mc[min_idx]})", _fmt_mc(vals_mc[min_idx]), "기간 내 최저")
+            + '</div>',
+            unsafe_allow_html=True,
         )
 
-    st.markdown(
-        '<div style="display:flex;flex-wrap:wrap;margin:0 0 8px;">'
-        + _kc(f"시가총액 ({years_mc[-1]})", _fmt_mc(latest_mc), mc_sub, hi=True)
-        + _kc(f"최고 ({years_mc[max_idx]})", _fmt_mc(vals_mc[max_idx]), "기간 내 최고")
-        + _kc(f"최저 ({years_mc[min_idx]})", _fmt_mc(vals_mc[min_idx]), "기간 내 최저")
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── 차트 (레이블 제거 → hover만) ─────────────────────────────────────────
-    bar_colors = [COLORS["orange"] if y == cur_yr_str else COLORS["blue"] for y in years_mc]
-    fig = go.Figure(go.Bar(
-        x=years_mc, y=vals_mc, marker_color=bar_colors,
-        hovertemplate="%{x}<br>시가총액: %{y:,.0f}억원<extra></extra>",
-    ))
-    fig.update_layout(
-        **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "xaxis")},
-        xaxis=dict(type="category", gridcolor="#e2e8f0",
-                   tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
-        yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
-                   tickfont=dict(color="#64748b")),
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=280,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        # ── 차트 (레이블 제거 → hover만) ─────────────────────────────────────
+        bar_colors = [COLORS["orange"] if y == cur_yr_str else COLORS["blue"] for y in years_mc]
+        fig = go.Figure(go.Bar(
+            x=years_mc, y=vals_mc, marker_color=bar_colors,
+            hovertemplate="%{x}<br>시가총액: %{y:,.0f}억원<extra></extra>",
+        ))
+        fig.update_layout(
+            **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "xaxis", "margin", "height")},
+            xaxis=dict(type="category", gridcolor="#e2e8f0",
+                       tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+            yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
+                       tickfont=dict(color="#64748b")),
+            margin=dict(l=4, r=4, t=20, b=4),
+            height=260,
+        )
+        st.plotly_chart(fig, use_container_width=True)
     return yf_data
 def _render_per_pbr_chart(yf_data: dict) -> None:
-    _section_header("PER / PBR 밸류에이션 추이", "연말 종가 기준 · 오늘: trailing 기준")
-    raw_per_pbr = yf_data.get("per_pbr", {})
-    if not raw_per_pbr:
-        st.caption("PER/PBR 계산에 필요한 재무데이터(순이익, 자본총계)를 가져올 수 없습니다.")
-        return
-    today_key = datetime.now().strftime("%Y-%m-%d")
-    per_pbr: dict[str, dict] = {}
-    for k, v in raw_per_pbr.items():
-        per_pbr[today_key if (not _is_year_key(k) and k != today_key) else k] = v
-    hist_keys  = sorted([k for k in per_pbr if _is_year_key(k)], key=int)
-    date_keys  = sorted([k for k in per_pbr if not _is_year_key(k)])
-    years_pp   = hist_keys + date_keys
-    per_vals   = [per_pbr[y].get("PER") for y in years_pp]
-    pbr_vals   = [per_pbr[y].get("PBR") for y in years_pp]
+    with st.container(border=True):
+        _section_header("PER / PBR 밸류에이션 추이", "연말 종가 기준 · 오늘: trailing 기준")
+        raw_per_pbr = yf_data.get("per_pbr", {})
+        if not raw_per_pbr:
+            st.caption("PER/PBR 계산에 필요한 재무데이터(순이익, 자본총계)를 가져올 수 없습니다.")
+            return
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        per_pbr: dict[str, dict] = {}
+        for k, v in raw_per_pbr.items():
+            per_pbr[today_key if (not _is_year_key(k) and k != today_key) else k] = v
+        hist_keys  = sorted([k for k in per_pbr if _is_year_key(k)], key=int)
+        date_keys  = sorted([k for k in per_pbr if not _is_year_key(k)])
+        years_pp   = hist_keys + date_keys
+        per_vals   = [per_pbr[y].get("PER") for y in years_pp]
+        pbr_vals   = [per_pbr[y].get("PBR") for y in years_pp]
 
-    # ── KPI 요약 카드 ──────────────────────────────────────────────────────────
-    cur_per = per_pbr.get(today_key, {}).get("PER")
-    cur_pbr = per_pbr.get(today_key, {}).get("PBR")
-    hist_per_vals = [per_pbr.get(y, {}).get("PER") for y in hist_keys[-5:]]
-    hist_pbr_vals = [per_pbr.get(y, {}).get("PBR") for y in hist_keys[-5:]]
-    hist_per_vals = [v for v in hist_per_vals if v]
-    hist_pbr_vals = [v for v in hist_pbr_vals if v]
-    avg_per = round(sum(hist_per_vals) / len(hist_per_vals), 1) if hist_per_vals else None
-    avg_pbr = round(sum(hist_pbr_vals) / len(hist_pbr_vals), 2) if hist_pbr_vals else None
+        # ── KPI 요약 카드 ────────────────────────────────────────────────────
+        cur_per = per_pbr.get(today_key, {}).get("PER")
+        cur_pbr = per_pbr.get(today_key, {}).get("PBR")
+        hist_per_vals = [per_pbr.get(y, {}).get("PER") for y in hist_keys[-5:]]
+        hist_pbr_vals = [per_pbr.get(y, {}).get("PBR") for y in hist_keys[-5:]]
+        hist_per_vals = [v for v in hist_per_vals if v]
+        hist_pbr_vals = [v for v in hist_pbr_vals if v]
+        avg_per = round(sum(hist_per_vals) / len(hist_per_vals), 1) if hist_per_vals else None
+        avg_pbr = round(sum(hist_pbr_vals) / len(hist_pbr_vals), 2) if hist_pbr_vals else None
 
-    def _kc(label, value, sub="", hi=False):
-        bg  = "#eff6ff" if hi else "#f8fafc"
-        bdr = "2px solid #2563eb" if hi else "1px solid #e2e8f0"
-        lc  = "#2563eb" if hi else "#64748b"
-        return (
-            f'<div style="flex:1;min-width:120px;text-align:center;padding:10px 8px;'
-            f'border:{bdr};border-radius:8px;background:{bg};margin:3px;">'
-            f'<div style="font-size:.65rem;color:{lc};font-weight:500;">{label}</div>'
-            f'<div style="font-size:.98rem;font-weight:700;color:#1e293b;margin-top:4px;">{value}</div>'
-            f'<div style="font-size:.61rem;color:#94a3b8;margin-top:2px;">{sub}</div>'
-            f'</div>'
+        def _kc(label, value, sub="", hi=False):
+            bg  = "#eff6ff" if hi else "#f8fafc"
+            bdr = "2px solid #2563eb" if hi else "1px solid #e2e8f0"
+            lc  = "#2563eb" if hi else "#64748b"
+            return (
+                f'<div style="flex:1;min-width:120px;text-align:center;padding:10px 8px;'
+                f'border:{bdr};border-radius:8px;background:{bg};margin:3px;">'
+                f'<div style="font-size:.65rem;color:{lc};font-weight:500;">{label}</div>'
+                f'<div style="font-size:.98rem;font-weight:700;color:#1e293b;margin-top:4px;">{value}</div>'
+                f'<div style="font-size:.61rem;color:#94a3b8;margin-top:2px;">{sub}</div>'
+                f'</div>'
+            )
+
+        st.markdown(
+            '<div style="display:flex;flex-wrap:wrap;margin:0 0 8px;">'
+            + _kc("PER (현재)",
+                  f"{cur_per:.1f}x" if cur_per else "-",
+                  f"5년 평균 {avg_per:.1f}x" if avg_per else "",
+                  hi=True)
+            + _kc("PBR (현재)",
+                  f"{cur_pbr:.2f}x" if cur_pbr else "-",
+                  f"5년 평균 {avg_pbr:.2f}x" if avg_pbr else "",
+                  hi=True)
+            + '</div>',
+            unsafe_allow_html=True,
         )
 
-    st.markdown(
-        '<div style="display:flex;flex-wrap:wrap;margin:0 0 8px;">'
-        + _kc("PER (현재)",
-              f"{cur_per:.1f}x" if cur_per else "-",
-              f"5년 평균 {avg_per:.1f}x" if avg_per else "",
-              hi=True)
-        + _kc("PBR (현재)",
-              f"{cur_pbr:.2f}x" if cur_pbr else "-",
-              f"5년 평균 {avg_pbr:.2f}x" if avg_pbr else "",
-              hi=True)
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── 차트 ─────────────────────────────────────────────────────────────────
-    def _marker(base_color: str) -> dict:
-        return dict(
-            size=[9 if not _is_year_key(y) else 5 for y in years_pp],
-            color=[COLORS["red"] if not _is_year_key(y) else base_color for y in years_pp],
+        # ── 차트 ─────────────────────────────────────────────────────────────
+        def _marker(base_color: str) -> dict:
+            return dict(
+                size=[9 if not _is_year_key(y) else 5 for y in years_pp],
+                color=[COLORS["red"] if not _is_year_key(y) else base_color for y in years_pp],
+            )
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Scatter(
+            x=years_pp, y=per_vals, name="PER", mode="lines+markers",
+            line=dict(color=COLORS["blue"], width=2), marker=_marker(COLORS["blue"]),
+            connectgaps=True,
+            hovertemplate="%{x}<br>PER: %{y:.1f}x<extra></extra>",
+        ), secondary_y=False)
+        fig.add_trace(go.Scatter(
+            x=years_pp, y=pbr_vals, name="PBR", mode="lines+markers",
+            line=dict(color=COLORS["orange"], width=2, dash="dot"), marker=_marker(COLORS["orange"]),
+            connectgaps=True,
+            hovertemplate="%{x}<br>PBR: %{y:.2f}x<extra></extra>",
+        ), secondary_y=True)
+        fig.update_layout(
+            **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "legend", "xaxis", "margin", "height")},
+            xaxis=dict(type="category", gridcolor="#e2e8f0",
+                       tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+            margin=dict(l=4, r=4, t=20, b=4),
+            height=260,
         )
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(
-        x=years_pp, y=per_vals, name="PER", mode="lines+markers",
-        line=dict(color=COLORS["blue"], width=2), marker=_marker(COLORS["blue"]),
-        connectgaps=True,
-        hovertemplate="%{x}<br>PER: %{y:.1f}x<extra></extra>",
-    ), secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=years_pp, y=pbr_vals, name="PBR", mode="lines+markers",
-        line=dict(color=COLORS["orange"], width=2, dash="dot"), marker=_marker(COLORS["orange"]),
-        connectgaps=True,
-        hovertemplate="%{x}<br>PBR: %{y:.2f}x<extra></extra>",
-    ), secondary_y=True)
-    fig.update_layout(
-        **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("yaxis", "legend", "xaxis")},
-        xaxis=dict(type="category", gridcolor="#e2e8f0",
-                   tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=280,
-    )
-    fig.update_yaxes(title_text="PER (배)", ticksuffix="x",
-                     gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), secondary_y=False)
-    fig.update_yaxes(title_text="PBR (배)", ticksuffix="x",
-                     gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
+        fig.update_yaxes(title_text="PER (배)", ticksuffix="x",
+                         gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), secondary_y=False)
+        fig.update_yaxes(title_text="PBR (배)", ticksuffix="x",
+                         gridcolor="#e2e8f0", tickfont=dict(color="#64748b"), secondary_y=True)
+        st.plotly_chart(fig, use_container_width=True)
 def _render_shareholder_section(corp_code: str) -> None:
     """최대주주 현황 + 변동현황 테이블 렌더링."""
     rcode_label = {"11011": "사업보고서", "11012": "반기보고서",
@@ -1611,175 +1622,177 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
     EV = 시가총액 + 순부채(차입금합계 - 현금)
     EBITDA = 영업이익 + 감가상각비 + 무형자산상각비
     """
-    mktcap = yf_data.get("mktcap", {})
-    if not mktcap or not corp_code:
-        return
+    with st.container(border=True):
+        mktcap = yf_data.get("mktcap", {})
+        if not mktcap or not corp_code:
+            return
 
-    fin: dict[str, dict] = fetch_all_years(corp_code, "CFS", _ver=_CACHE_VER)
-    if not fin:
-        fin = fetch_all_years(corp_code, "OFS", _ver=_CACHE_VER)
-    if not fin:
-        return
+        fin: dict[str, dict] = fetch_all_years(corp_code, "CFS", _ver=_CACHE_VER)
+        if not fin:
+            fin = fetch_all_years(corp_code, "OFS", _ver=_CACHE_VER)
+        if not fin:
+            return
 
-    years_sorted = sorted(
-        set(mktcap.keys()) & set(fin.keys()),
-        key=lambda y: int(y),
-    )
-    if not years_sorted:
-        return
+        years_sorted = sorted(
+            set(mktcap.keys()) & set(fin.keys()),
+            key=lambda y: int(y),
+        )
+        if not years_sorted:
+            return
 
-    ev_vals:     list[float | None] = []
-    ebitda_vals: list[float | None] = []
-    ratio_vals:  list[float | None] = []
+        ev_vals:     list[float | None] = []
+        ebitda_vals: list[float | None] = []
+        ratio_vals:  list[float | None] = []
 
-    for y in years_sorted:
-        mc  = mktcap.get(y)
-        d   = fin.get(y, {})
-        bs  = d.get("bs", {})
-        cf  = d.get("cf", {})
-        isd = d.get("is", {})
+        for y in years_sorted:
+            mc  = mktcap.get(y)
+            d   = fin.get(y, {})
+            bs  = d.get("bs", {})
+            cf  = d.get("cf", {})
+            isd = d.get("is", {})
 
-        net_debt  = bs.get("netDebt")
-        op_income = isd.get("opIncome")
-        depre     = cf.get("depre")
-        amort     = cf.get("amort")
+            net_debt  = bs.get("netDebt")
+            op_income = isd.get("opIncome")
+            depre     = cf.get("depre")
+            amort     = cf.get("amort")
 
-        if op_income is not None or depre is not None or amort is not None:
-            ebitda = (op_income or 0) + (depre or 0) + (amort or 0)
-        else:
-            ebitda = None
+            if op_income is not None or depre is not None or amort is not None:
+                ebitda = (op_income or 0) + (depre or 0) + (amort or 0)
+            else:
+                ebitda = None
 
-        ev    = (mc + (net_debt or 0)) if mc is not None else None
-        ratio = round(ev / ebitda, 1) if (ev is not None and ebitda and ebitda > 0) else None
+            ev    = (mc + (net_debt or 0)) if mc is not None else None
+            ratio = round(ev / ebitda, 1) if (ev is not None and ebitda and ebitda > 0) else None
 
-        ev_vals.append(ev)
-        ebitda_vals.append(ebitda)
-        ratio_vals.append(ratio)
+            ev_vals.append(ev)
+            ebitda_vals.append(ebitda)
+            ratio_vals.append(ratio)
 
-    if not any(r is not None for r in ratio_vals):
-        return
+        if not any(r is not None for r in ratio_vals):
+            return
 
-    _section_header(
-        "EV / EBITDA 추이",
-        "EV = 시가총액 + 순부채(차입금 − 현금) · EBITDA = 영업이익 + 감가상각비 + 무형자산상각비 (억 원 / 배)",
-    )
-
-    # ── 정의 카드 (차트 밖 HTML) ──────────────────────────────────────────────
-    st.markdown(
-        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
-        'padding:10px 16px;margin-bottom:6px;font-size:.79rem;color:#1e293b;">'
-        '<b>EV/EBITDA</b> — 기업가치(EV)가 EBITDA의 몇 배인지 나타내는 밸류에이션 지표. '
-        '낮을수록 상대적 저평가.<br>'
-        '<span style="color:#475569;">'
-        '&nbsp;• <b>EV</b> (Enterprise Value) = 시가총액 + 순부채 (차입금 합계 − 현금및현금성자산)<br>'
-        '&nbsp;• <b>EBITDA</b> = 영업이익 + 감가상각비 (D, Depreciation) + 무형자산상각비 (A, Amortization)<br>'
-        '&nbsp;• 자본구조·세율·감가상각 정책 차이를 제거해 기업 간 수익성을 동일 기준으로 비교할 때 활용'
-        '</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── KPI 요약 카드 ──────────────────────────────────────────────────────────
-    latest_idx = len(years_sorted) - 1
-    prev_idx   = latest_idx - 1 if latest_idx > 0 else None
-    ly         = years_sorted[latest_idx]
-    ev_now     = ev_vals[latest_idx]
-    eb_now     = ebitda_vals[latest_idx]
-    rt_now     = ratio_vals[latest_idx]
-    rt_prev    = ratio_vals[prev_idx] if prev_idx is not None else None
-    ev_prev    = ev_vals[prev_idx] if prev_idx is not None else None
-    eb_prev    = ebitda_vals[prev_idx] if prev_idx is not None else None
-
-    def _fmt_억(v):
-        if v is None: return "-"
-        return f"{v/10_000:.1f}조" if v >= 10_000 else f"{int(v):,}억"
-
-    def _yoy(now, prev):
-        if not (now and prev and prev > 0): return ""
-        chg = (now - prev) / prev * 100
-        sym = "▲" if chg >= 0 else "▼"
-        clr = "#dc2626" if chg >= 0 else "#2563eb"
-        return f'<span style="color:{clr};">{sym}{abs(chg):.1f}%</span> YoY'
-
-    def _kc(label, value, sub="", hi=False):
-        bg  = "#eff6ff" if hi else "#f8fafc"
-        bdr = "2px solid #2563eb" if hi else "1px solid #e2e8f0"
-        lc  = "#2563eb" if hi else "#64748b"
-        return (
-            f'<div style="flex:1;min-width:120px;text-align:center;padding:10px 8px;'
-            f'border:{bdr};border-radius:8px;background:{bg};margin:3px;">'
-            f'<div style="font-size:.65rem;color:{lc};font-weight:500;">{label}</div>'
-            f'<div style="font-size:.98rem;font-weight:700;color:#1e293b;margin-top:4px;">{value}</div>'
-            f'<div style="font-size:.61rem;color:#94a3b8;margin-top:2px;">{sub}</div>'
-            f'</div>'
+        _section_header(
+            "EV / EBITDA 추이",
+            "EV = 시가총액 + 순부채(차입금 − 현금) · EBITDA = 영업이익 + 감가상각비 + 무형자산상각비 (억 원 / 배)",
         )
 
-    st.markdown(
-        '<div style="display:flex;flex-wrap:wrap;margin:0 0 4px;">'
-        + _kc(f"EV ({ly})",      _fmt_억(ev_now), _yoy(ev_now, ev_prev))
-        + _kc(f"EBITDA ({ly})",  _fmt_억(eb_now), _yoy(eb_now, eb_prev))
-        + _kc(f"EV/EBITDA ({ly})",
-              f"{rt_now:.1f}x" if rt_now is not None else "-",
-              f"전년 {rt_prev:.1f}x" if rt_prev is not None else "",
-              hi=True)
-        + '</div>',
-        unsafe_allow_html=True,
-    )
+        # ── 정의 카드 (차트 밖 HTML) ──────────────────────────────────────────────
+        st.markdown(
+            '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
+            'padding:10px 16px;margin-bottom:6px;font-size:.79rem;color:#1e293b;">'
+            '<b>EV/EBITDA</b> — 기업가치(EV)가 EBITDA의 몇 배인지 나타내는 밸류에이션 지표. '
+            '낮을수록 상대적 저평가.<br>'
+            '<span style="color:#475569;">'
+            '&nbsp;• <b>EV</b> (Enterprise Value) = 시가총액 + 순부채 (차입금 합계 − 현금및현금성자산)<br>'
+            '&nbsp;• <b>EBITDA</b> = 영업이익 + 감가상각비 (D, Depreciation) + 무형자산상각비 (A, Amortization)<br>'
+            '&nbsp;• 자본구조·세율·감가상각 정책 차이를 제거해 기업 간 수익성을 동일 기준으로 비교할 때 활용'
+            '</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
-    # ── Plotly 차트 (annotation 없음, 막대 레이블 제거 → hover만) ─────────────
-    fig = go.Figure()
+        # ── KPI 요약 카드 ──────────────────────────────────────────────────────────
+        latest_idx = len(years_sorted) - 1
+        prev_idx   = latest_idx - 1 if latest_idx > 0 else None
+        ly         = years_sorted[latest_idx]
+        ev_now     = ev_vals[latest_idx]
+        eb_now     = ebitda_vals[latest_idx]
+        rt_now     = ratio_vals[latest_idx]
+        rt_prev    = ratio_vals[prev_idx] if prev_idx is not None else None
+        ev_prev    = ev_vals[prev_idx] if prev_idx is not None else None
+        eb_prev    = ebitda_vals[prev_idx] if prev_idx is not None else None
 
-    fig.add_trace(go.Bar(
-        x=years_sorted,
-        y=[v if v is not None else 0 for v in ev_vals],
-        name="EV (억원)",
-        marker_color=COLORS["blue"],
-        opacity=0.7,
-        yaxis="y",
-        hovertemplate="%{x}<br>EV: %{y:,.0f}억원<extra></extra>",
-    ))
+        def _fmt_억(v):
+            if v is None: return "-"
+            return f"{v/10_000:.1f}조" if v >= 10_000 else f"{int(v):,}억"
 
-    fig.add_trace(go.Bar(
-        x=years_sorted,
-        y=[v if v is not None else 0 for v in ebitda_vals],
-        name="EBITDA (억원)",
-        marker_color=COLORS["green"],
-        opacity=0.7,
-        yaxis="y",
-        hovertemplate="%{x}<br>EBITDA: %{y:,.0f}억원<extra></extra>",
-    ))
+        def _yoy(now, prev):
+            if not (now and prev and prev > 0): return ""
+            chg = (now - prev) / prev * 100
+            sym = "▲" if chg >= 0 else "▼"
+            clr = "#dc2626" if chg >= 0 else "#2563eb"
+            return f'<span style="color:{clr};">{sym}{abs(chg):.1f}%</span> YoY'
 
-    fig.add_trace(go.Scatter(
-        x=years_sorted,
-        y=ratio_vals,
-        name="EV/EBITDA (배)",
-        mode="lines+markers+text",
-        line=dict(color=COLORS["orange"], width=2.5),
-        marker=dict(size=7, color=COLORS["orange"]),
-        text=[f"{v:.1f}x" if v is not None else "" for v in ratio_vals],
-        textposition="top center",
-        textfont=dict(size=9, color=COLORS["orange"]),
-        yaxis="y2",
-        hovertemplate="%{x}<br>EV/EBITDA: %{y:.1f}x<extra></extra>",
-    ))
+        def _kc(label, value, sub="", hi=False):
+            bg  = "#eff6ff" if hi else "#f8fafc"
+            bdr = "2px solid #2563eb" if hi else "1px solid #e2e8f0"
+            lc  = "#2563eb" if hi else "#64748b"
+            return (
+                f'<div style="flex:1;min-width:120px;text-align:center;padding:10px 8px;'
+                f'border:{bdr};border-radius:8px;background:{bg};margin:3px;">'
+                f'<div style="font-size:.65rem;color:{lc};font-weight:500;">{label}</div>'
+                f'<div style="font-size:.98rem;font-weight:700;color:#1e293b;margin-top:4px;">{value}</div>'
+                f'<div style="font-size:.61rem;color:#94a3b8;margin-top:2px;">{sub}</div>'
+                f'</div>'
+            )
 
-    fig.update_layout(
-        **{k: v for k, v in PLOTLY_LAYOUT.items()
-           if k not in ("yaxis", "xaxis", "margin", "height", "legend")},
-        barmode="group",
-        margin=dict(l=10, r=10, t=40, b=10),
-        height=320,
-        xaxis=dict(type="category", gridcolor="#e2e8f0",
-                   tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
-        yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
-                   tickfont=dict(color="#64748b"), side="left"),
-        yaxis2=dict(title="EV/EBITDA (배)", overlaying="y", side="right",
-                    tickfont=dict(color=COLORS["orange"]),
-                    showgrid=False),
-        legend=dict(orientation="h", y=1.05, x=1.0, xanchor="right",
-                    bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        st.markdown(
+            '<div style="display:flex;flex-wrap:wrap;margin:0 0 4px;">'
+            + _kc(f"EV ({ly})",      _fmt_억(ev_now), _yoy(ev_now, ev_prev))
+            + _kc(f"EBITDA ({ly})",  _fmt_억(eb_now), _yoy(eb_now, eb_prev))
+            + _kc(f"EV/EBITDA ({ly})",
+                  f"{rt_now:.1f}x" if rt_now is not None else "-",
+                  f"전년 {rt_prev:.1f}x" if rt_prev is not None else "",
+                  hi=True)
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Plotly 차트 (annotation 없음, 막대 레이블 제거 → hover만) ─────────────
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=years_sorted,
+            y=[v if v is not None else 0 for v in ev_vals],
+            name="EV (억원)",
+            marker_color=COLORS["blue"],
+            opacity=0.7,
+            yaxis="y",
+            hovertemplate="%{x}<br>EV: %{y:,.0f}억원<extra></extra>",
+        ))
+
+        fig.add_trace(go.Bar(
+            x=years_sorted,
+            y=[v if v is not None else 0 for v in ebitda_vals],
+            name="EBITDA (억원)",
+            marker_color=COLORS["green"],
+            opacity=0.7,
+            yaxis="y",
+            hovertemplate="%{x}<br>EBITDA: %{y:,.0f}억원<extra></extra>",
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=years_sorted,
+            y=ratio_vals,
+            name="EV/EBITDA (배)",
+            mode="lines+markers+text",
+            line=dict(color=COLORS["orange"], width=2.5),
+            marker=dict(size=7, color=COLORS["orange"]),
+            text=[f"{v:.1f}x" if v is not None else "" for v in ratio_vals],
+            textposition="top center",
+            textfont=dict(size=9, color=COLORS["orange"]),
+            yaxis="y2",
+            hovertemplate="%{x}<br>EV/EBITDA: %{y:.1f}x<extra></extra>",
+        ))
+
+        fig.update_layout(
+            **{k: v for k, v in PLOTLY_LAYOUT.items()
+               if k not in ("yaxis", "xaxis", "margin", "height", "legend")},
+            barmode="group",
+            margin=dict(l=10, r=10, t=40, b=10),
+            height=320,
+            xaxis=dict(type="category", gridcolor="#e2e8f0",
+                       tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
+            yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
+                       tickfont=dict(color="#64748b"), side="left"),
+            yaxis2=dict(title="EV/EBITDA (배)", overlaying="y", side="right",
+                        tickfont=dict(color=COLORS["orange"]),
+                        showgrid=False),
+            legend=dict(orientation="h", y=1.05, x=1.0, xanchor="right",
+                        bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
 # ══════════════════════════════════════════
 #  주주 현황 탭 통합 렌더러
 # ══════════════════════════════════════════
@@ -2104,45 +2117,6 @@ def _render_fs_tab(corp: dict) -> None:
             })
         st.dataframe(rows, hide_index=True, use_container_width=True)
 
-        # ── D&A "-" 시 DART CF 원본 계정명 확인 expander ──────────────
-        if not has_da:
-            # 가장 최근 연도 CF accounts 가져오기
-            recent_cf_accounts: list[tuple[str, str]] = []
-            for y in reversed(years):
-                accs = data[y]["cf"].get("_cf_accounts", [])
-                if accs:
-                    recent_cf_accounts = accs
-                    _debug_year = y
-                    break
-            if recent_cf_accounts:
-                with st.expander(
-                    "⚠️ 감가상각비 데이터 없음 — DART CF 계정명 확인",
-                    expanded=False,
-                ):
-                    st.caption(
-                        f"**{_debug_year}년** DART 현금흐름표 원본 계정 목록입니다. "
-                        "감가상각 관련 계정명을 확인해 알려주시면 ACC dict에 추가하겠습니다. "
-                        "thstrm_amount / thstrm_add_amt 모두 비어 있으면 DART API 자체 미제공입니다."
-                    )
-                    _DA_KEYWORDS = ("상각", "감가", "depreci", "amort")
-                    highlighted, others = [], []
-                    for row in recent_cf_accounts:
-                        nm = row.get("계정명", "")
-                        entry = {
-                            "계정명":          nm,
-                            "thstrm_amount":   row.get("thstrm_amount",  ""),
-                            "thstrm_add_amt":  row.get("thstrm_add_amt", ""),
-                            "비고": "✅ D&A 의심" if any(k in nm for k in _DA_KEYWORDS) else "",
-                        }
-                        if any(k in nm for k in _DA_KEYWORDS):
-                            highlighted.append(entry)
-                        else:
-                            others.append(entry)
-                    if highlighted:
-                        st.markdown("**감가상각 관련 의심 계정:**")
-                        st.dataframe(highlighted, hide_index=True, use_container_width=True)
-                    st.markdown("**전체 CF 계정 목록:**")
-                    st.dataframe(highlighted + others, hide_index=True, use_container_width=True)
 # ══════════════════════════════════════════
 #  공시·뉴스 탭
 # ══════════════════════════════════════════
