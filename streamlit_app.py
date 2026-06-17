@@ -13,6 +13,7 @@ import os
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -212,6 +213,32 @@ st.markdown("""
 # ══════════════════════════════════════════
 #  유틸리티
 # ══════════════════════════════════════════
+def _ksic_to_sector(code: str) -> str:
+    """DART 업종코드(KSIC 6자리) → 한국어 업종 대분류명."""
+    try:
+        n = int(str(code)[:2])
+    except (ValueError, TypeError):
+        return ""
+    if n <= 3:   return "농림어업"
+    if n <= 8:   return "광업"
+    if n <= 33:  return "제조업"
+    if n == 35:  return "전기·가스·증기"
+    if n <= 39:  return "수도·폐기물"
+    if n <= 43:  return "건설업"
+    if n <= 47:  return "도소매업"
+    if n <= 52:  return "운수·창고업"
+    if n <= 56:  return "숙박·음식업"
+    if n <= 63:  return "정보통신업"
+    if n <= 66:  return "금융·보험업"
+    if n == 68:  return "부동산업"
+    if n <= 73:  return "전문·과학·기술"
+    if n <= 75:  return "사업시설관리"
+    if n == 84:  return "공공행정"
+    if n == 85:  return "교육서비스업"
+    if n <= 87:  return "보건·사회복지"
+    if n <= 91:  return "예술·스포츠"
+    return "서비스업"
+
 def clean(s: str) -> str:
     return (s or "").replace(" ", "")
 def parse_amt(item: dict) -> int | None:
@@ -492,7 +519,7 @@ def _fetch_da_from_dart_zip(corp_code: str, year: int) -> tuple[int | None, int 
 
     반환: (depre_억원, amort_억원) — 40 MB 초과 or 파싱 실패 시 (None, None).
     """
-    import zipfile, io, re
+    import re
     from bs4 import BeautifulSoup
 
     rcept_no = _fetch_rcept_no(corp_code, year)
@@ -603,13 +630,19 @@ def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
                          timeout=10)
         d = r.json()
         if d.get("status") == "000":
-            cls_map = {"Y": "유가증권(KOSPI)", "K": "코스닥(KOSDAQ)", "N": "코넥스", "E": "기타"}
-            est = d.get("est_dt", "")
-            raw_url = (d.get("hm_url") or "").strip().rstrip("/")
+            cls_map   = {"Y": "유가증권(KOSPI)", "K": "코스닥(KOSDAQ)", "N": "코넥스", "E": "기타"}
+            badge_map = {"Y": "KOSPI", "K": "KOSDAQ", "N": "코넥스", "E": "기타"}
+            raw_cls   = d.get("corp_cls", "Y")
+            est       = d.get("est_dt", "")
+            raw_url   = (d.get("hm_url") or "").strip().rstrip("/")
+            induty    = str(d.get("induty_code") or "")
             result = {
                 "ceo_nm":       d.get("ceo_nm", ""),
-                "corp_cls":     cls_map.get(d.get("corp_cls", ""), ""),
-                "corp_cls_raw": d.get("corp_cls", "Y"),
+                "corp_cls":     cls_map.get(raw_cls, ""),
+                "cls_label":    badge_map.get(raw_cls, ""),
+                "corp_cls_raw": raw_cls,
+                "induty_code":  induty,
+                "sector":       _ksic_to_sector(induty),
                 "est_dt":       f"{est[:4]}.{est[4:6]}" if len(est) >= 6 else "",
                 "acc_mt":       f"{d.get('acc_mt', '')}월" if d.get("acc_mt") else "",
                 "phn_no":       d.get("phn_no", ""),
@@ -2693,9 +2726,6 @@ def _run_search(q: str) -> None:
     else:
         st.session_state["selected_corp"]     = None
         st.session_state["_search_no_result"] = q
-# ══════════════════════════════════════════
-#  메인 UI
-# ══════════════════════════════════════════
 def main() -> None:
     if not DART_KEY:
         st.error(
@@ -2754,115 +2784,19 @@ def main() -> None:
         f'<span style="font-size:1.25rem;font-weight:800;color:#1e293b;">{corp["corp_name"]}</span>'
         + (f'<span style="font-size:.82rem;color:#2563eb;font-weight:600;">{corp.get("stock_code","")}</span>'
            if corp.get("stock_code") else "")
-        + (f'<span style="font-size:.75rem;color:#64748b;">{ov.get("cls_label","")}</span>'
-           if ov.get("cls_label") else "")
-        + f'</div>'
-        + (f'<div style="font-size:.75rem;color:#475569;margin-top:4px;">{ov.get("sector","")}'
-           + (f' &nbsp;|&nbsp; {ov.get("product","")}' if ov.get("product") else "")
-           + f'</div>' if ov.get("sector") else "")
-        + (f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">'
-           + "  &nbsp;|&nbsp;  ".join(filter(None, [
-               ov.get("est_dt",""), ov.get("acc_mt",""), ov.get("adres",""),
-               f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a>'
-               if ov.get("hm_url") else "",
-           ])) + f'</div>' if any(ov.get(k) for k in ("est_dt","acc_mt","adres","hm_url")) else "")
-        + f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    if corp.get("stock_code"):
-        with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
-            _vc1, _vc2, _vc3, _vc4 = st.columns(4)
-            with _vc1:
-                _wacc  = st.number_input(
-                    "WACC 할인율 (%)", 1.0, 30.0, 10.0, 0.5, key="val_wacc",
-                    help="가중평균자본비용 — DCF 분모에 적용"
-                ) / 100
-            with _vc2:
-                _tg    = st.number_input(
-                    "영구성장률 g (%)", 0.0, 10.0, 2.0, 0.5, key="val_tg",
-                    help="Terminal Value 계산에 사용하는 무한 성장률 (WACC 미만이어야 함)"
-                ) / 100
-            with _vc3:
-                _fcfg  = st.number_input(
-                    "FCF 성장률 (%)", -10.0, 30.0, 5.0, 0.5, key="val_fcfg",
-                    help="예측기간 N년 동안 적용할 FCF 연간 성장률"
-                ) / 100
-            with _vc4:
-                _years = int(st.number_input(
-                    "예측기간 (년)", 3, 15, 5, 1, key="val_years",
-                    help="DCF 명시적 현금흐름 예측 기간"
-                ))
-        with st.spinner("적정주가 산정 중..."):
-            _fv = compute_fair_values(
-                corp["corp_code"], corp.get("stock_code", ""),
-                ov.get("corp_cls_raw", "Y"),
-                _wacc, _tg, _fcfg, _years, _CACHE_VER,
-            )
-        _render_valuation_card(_fv)
-def main() -> None:
-    if not DART_KEY:
-        st.error(
-            "DART API 키가 설정되지 않았습니다.\n\n"
-            "**로컬 실행:** `.streamlit/secrets.toml` 에 `DART_KEY = \"your_key\"` 추가\n\n"
-            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력"
+        + (
+            f'<span style="font-size:.7rem;font-weight:700;padding:2px 8px;border-radius:10px;'
+            + ('background:#dbeafe;color:#1d4ed8;' if ov.get("corp_cls_raw")=="Y"
+               else 'background:#dcfce7;color:#15803d;' if ov.get("corp_cls_raw")=="K"
+               else 'background:#f1f5f9;color:#475569;')
+            + f'">{ov["cls_label"]}</span>'
+            if ov.get("cls_label") else ""
         )
-        st.stop()
-    # 스티키 헤더
-    st.markdown(
-        """
-        <style>
-        .stickytop { position: sticky; top: 0; z-index: 999; background: #f8fafc;
-                     padding: 8px 0 6px; border-bottom: 1px solid #e2e8f0; margin-bottom: 8px; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.container():
-        st.markdown('<div class="stickytop">', unsafe_allow_html=True)
-        col_logo, col_search, col_btn = st.columns([1, 5, 1])
-        with col_logo:
-            st.markdown(
-                '<span class="dart-title" style="font-size:1.1rem;font-weight:800;'
-                'color:#2563eb;white-space:nowrap;">📊 DART 기업 분석</span>',
-                unsafe_allow_html=True,
-            )
-        with col_search:
-            st.text_input(
-                "기업 검색",
-                placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
-                key="_search_input",
-                on_change=_on_search_enter,
-                label_visibility="collapsed",
-            )
-        with col_btn:
-            if st.button("검색", use_container_width=True):
-                _run_search(st.session_state.get("_search_input", ""))
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    corp = st.session_state.get("selected_corp")
-    no_result_q = st.session_state.get("_search_no_result", "")
-    if no_result_q:
-        st.warning(f"검색 결과가 없습니다: **{no_result_q}**")
-    if not corp:
-        st.info("회사명 또는 종목코드를 입력하여 검색하세요.")
-        return
-
-    ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
-
-    # 회사 정보 카드
-    st.markdown(
-        f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
-        f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:0 0 10px 0;">'
-        f'<div style="display:flex;align-items:baseline;gap:10px;">'
-        f'<span style="font-size:1.25rem;font-weight:800;color:#1e293b;">{corp["corp_name"]}</span>'
-        + (f'<span style="font-size:.82rem;color:#2563eb;font-weight:600;">{corp.get("stock_code","")}</span>'
-           if corp.get("stock_code") else "")
-        + (f'<span style="font-size:.75rem;color:#64748b;">{ov.get("cls_label","")}</span>'
-           if ov.get("cls_label") else "")
         + f'</div>'
-        + (f'<div style="font-size:.75rem;color:#475569;margin-top:4px;">{ov.get("sector","")}'
-           + (f' &nbsp;|&nbsp; {ov.get("product","")}' if ov.get("product") else "")
+        + (f'<div style="font-size:.75rem;color:#475569;margin-top:5px;">'
+           + (f'<span style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;'
+              f'padding:1px 6px;font-size:.68rem;color:#64748b;margin-right:6px;">{ov["sector"]}</span>'
+              if ov.get("sector") else "")
            + f'</div>' if ov.get("sector") else "")
         + (f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">'
            + "  &nbsp;|&nbsp;  ".join(filter(None, [
