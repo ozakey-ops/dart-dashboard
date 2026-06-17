@@ -644,7 +644,8 @@ def fetch_market_data() -> dict:
             prev  = round(float(hist.loc[dates[-2], "Close"]) * mul, nd) if len(dates) >= 2 else None
             chg   = round(cur - prev, nd) if prev is not None else None
             raw[sym] = {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
-        ref_date = raw.get("USDKRW=X", {}).get("date", "")
+        ref_date   = raw.get("USDKRW=X", {}).get("date", "")
+        fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         return {
             "usd_krw":        raw.get("USDKRW=X", {}).get("value"),
             "jpy100_krw":     raw.get("JPYKRW=X",  {}).get("value"),
@@ -655,6 +656,7 @@ def fetch_market_data() -> dict:
             "usd_jpy_chg":    raw.get("USDJPY=X",  {}).get("chg"),
             "bond10y_chg":    raw.get("^TNX",      {}).get("chg"),
             "date":           ref_date,
+            "fetched_at":     fetched_at,
         }
     except Exception:
         return {}
@@ -1773,10 +1775,16 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
                 f'</div>'
             )
 
+        _valid_ratios = [v for v in ratio_vals if v is not None]
+        avg_ratio = sum(_valid_ratios) / len(_valid_ratios) if _valid_ratios else None
+
         st.markdown(
             '<div style="display:flex;flex-wrap:wrap;margin:4px 0;">'
             + _kc(f"EV ({ly})",      _fmt_억(ev_now), _yoy(ev_now, ev_prev))
             + _kc(f"EBITDA ({ly})",  _fmt_억(eb_now), _yoy(eb_now, eb_prev))
+            + _kc(f"연평균 EV/EBITDA",
+                  f"{avg_ratio:.1f}x" if avg_ratio is not None else "-",
+                  f"{len(_valid_ratios)}개년 평균")
             + _kc(f"EV/EBITDA ({ly})",
                   f"{rt_now:.1f}x" if rt_now is not None else "-",
                   f"전년 {rt_prev:.1f}x" if rt_prev is not None else "",
@@ -1827,14 +1835,15 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
                if k not in ("yaxis", "xaxis", "margin", "height", "legend")},
             barmode="group",
             margin=dict(l=4, r=4, t=20, b=4),
-            height=300,
+            height=320,
             xaxis=dict(type="category", gridcolor="#e2e8f0",
                        tickfont=dict(color="#64748b"), linecolor="#e2e8f0"),
             yaxis=dict(title="억 원", tickformat=",", gridcolor="#e2e8f0",
                        tickfont=dict(color="#64748b"), side="left"),
             yaxis2=dict(title="EV/EBITDA (배)", overlaying="y", side="right",
                         tickfont=dict(color=COLORS["orange"]),
-                        showgrid=False),
+                        showgrid=False,
+                        range=[0, max((v for v in ratio_vals if v is not None), default=1) * 1.35]),
             legend=dict(orientation="h", y=1.05, x=1.0, xanchor="right",
                         bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
         )
@@ -2907,7 +2916,13 @@ def main() -> None:
             + _fx_card_item("원 / 100엔",      md["jpy100_krw"], md.get("jpy100_krw_chg"), "원", ".1f")
             + _fx_card_item("엔 / 달러",       md["usd_jpy"],    md.get("usd_jpy_chg"),    "엔", ".2f")
             + _fx_card_item("10년 채권 이자율", md["bond10y"],    md.get("bond10y_chg"),    "%",  ".3f")
-            + f'</div>',
+            + f'</div>'
+            + (
+                f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;'
+                f'padding:2px 8px 4px;border-top:1px solid #f1f5f9;margin-top:2px;">'
+                f'수집: {md["fetched_at"]} · 기준일: {md.get("date","–")} · 5분 캐시'
+                f'</div>'
+            ),
             unsafe_allow_html=True,
         )
 
