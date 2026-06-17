@@ -2744,14 +2744,14 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+    st.markdown(
+        '<div style="text-align:center;padding:10px 0 6px;">'
+        '<span style="font-size:1.25rem;font-weight:800;color:#2563eb;">📊 기업 주식 및 재무 현황 분석</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     with st.container():
         st.markdown('<div class="stickytop">', unsafe_allow_html=True)
-        st.markdown(
-            '<div style="text-align:center;padding:4px 0 6px;">'
-            '<span style="font-size:1.25rem;font-weight:800;color:#2563eb;">📊 기업 주식 및 재무 현황 분석</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
         col_search, col_btn = st.columns([6, 1])
         with col_search:
             st.text_input(
