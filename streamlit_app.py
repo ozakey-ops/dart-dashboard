@@ -2485,37 +2485,6 @@ def main() -> None:
             )
         _render_valuation_card(_fv)
 
-    if corp.get("stock_code"):
-        with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
-            _vc1, _vc2, _vc3, _vc4 = st.columns(4)
-            with _vc1:
-                _wacc  = st.number_input(
-                    "WACC 할인율 (%)", 1.0, 30.0, 10.0, 0.5, key="val_wacc",
-                    help="가중평균자본비용 — DCF 분모에 적용"
-                ) / 100
-            with _vc2:
-                _tg    = st.number_input(
-                    "영구성장률 g (%)", 0.0, 10.0, 2.0, 0.5, key="val_tg",
-                    help="Terminal Value 계산에 사용하는 무한 성장률 (WACC 미만이어야 함)"
-                ) / 100
-            with _vc3:
-                _fcfg  = st.number_input(
-                    "FCF 성장률 (%)", -10.0, 30.0, 5.0, 0.5, key="val_fcfg",
-                    help="예측기간 N년 동안 적용할 FCF 연간 성장률"
-                ) / 100
-            with _vc4:
-                _years = int(st.number_input(
-                    "예측기간 (년)", 3, 15, 5, 1, key="val_years",
-                    help="DCF 명시적 현금흐름 예측 기간"
-                ))
-        with st.spinner("적정주가 산정 중..."):
-            _fv = compute_fair_values(
-                corp["corp_code"], corp.get("stock_code", ""),
-                ov.get("corp_cls_raw", "Y"),
-                _wacc, _tg, _fcfg, _years, _CACHE_VER,
-            )
-        _render_valuation_card(_fv)
-
     # 환율 + 미국채 카드
     md = fetch_market_data()
     if md and md.get("usd_krw"):
