@@ -401,6 +401,7 @@ def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
                 "finCF":   find_amount(cf, ACC["finCF"]),
                 "endCash": find_end_cash(cf),
                 # EBITDA 구성: 영업활동CF 조정항목에서 D&A 추출
+                # ① 키워드 매칭 → ② DART ZIP 주석 HTML 파싱 순으로 시도
                 "depre":   find_amount(cf, ACC["depreciation"]),
                 "amort":   find_amount(cf, ACC["amortization"]),
                 # 디버그용: CF 전체 계정명 + 금액 필드 (D&A 매칭 실패 시 확인용)
@@ -438,6 +439,149 @@ def fetch_all_years(corp_code: str, fs_div: str, _ver: int = _CACHE_VER) -> dict
             if data:
                 all_data[str(year)] = data
     return all_data
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  DART 공시 ZIP HTML 파싱 — 재무제표 주석에서 D&A 추출 (fnlttSinglAcntAll 누락 폴백)
+# ──────────────────────────────────────────────────────────────────────────────
+_DA_ZIP_SIZE_LIMIT = 40 * 1024 * 1024   # 40 MB — 초과 시 파싱 건너뜀
+
+
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
+def _fetch_rcept_no(corp_code: str, year: int) -> str | None:
+    """해당 연도 사업보고서(reprt_code=11011) rcept_no 조회."""
+    try:
+        r = _dart_get("list.json", {
+            "crtfc_key":        DART_KEY,
+            "corp_code":        corp_code,
+            "bgn_de":           f"{year}0101",
+            "end_de":           f"{year + 1}0630",
+            "pblntf_detail_ty": "A001",   # 사업보고서
+            "sort":             "date",
+            "sort_mthd":        "desc",
+            "page_count":       "10",
+        })
+        d = r.json()
+        if d.get("status") != "000":
+            return None
+        items = [
+            x for x in d.get("list", [])
+            if str(x.get("bsns_year", "")) == str(year)
+        ]
+        return items[0]["rcept_no"] if items else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
+def _fetch_da_from_dart_zip(corp_code: str, year: int) -> tuple[int | None, int | None]:
+    """
+    DART 사업보고서 ZIP → HTML 재무제표 주석 파싱 → 감가상각비·무형자산상각비 (억원).
+
+    대상: fnlttSinglAcntAll 에서 D&A 항목이 누락된 기업 (삼성 등 조정합계만 태깅).
+    주석 27(현금흐름표 조정내역) HTML 테이블에서 "감가상각비"·"무형자산상각비" 행을 찾아 파싱.
+
+    반환: (depre_억원, amort_억원) — 40 MB 초과 or 파싱 실패 시 (None, None).
+    """
+    import zipfile, io, re
+    from bs4 import BeautifulSoup
+
+    rcept_no = _fetch_rcept_no(corp_code, year)
+    if not rcept_no:
+        return None, None
+
+    # ── ZIP 다운로드 (크기 제한) ──────────────────────────────────────────────
+    try:
+        r = _dart_get(
+            "document.xml",
+            {"crtfc_key": DART_KEY, "rcept_no": rcept_no},
+            timeout=(10, 90),
+        )
+        raw = r.content
+    except Exception:
+        return None, None
+
+    if not raw or len(raw) < 1_000:
+        return None, None
+    if len(raw) > _DA_ZIP_SIZE_LIMIT:
+        return None, None   # ZIP 너무 큼 → 건너뜀
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except Exception:
+        return None, None
+
+    # ── 단위 감지 헬퍼 ────────────────────────────────────────────────────────
+    def _detect_unit(text: str) -> float:
+        """금액 단위 감지 → 억원 변환 제수."""
+        snippet = text[:4000].replace(" ", "").replace("\n", "")
+        if re.search(r"단위.*백만원|백만원.*단위|백만원\)", snippet, re.I):
+            return 100.0        # 백만원 → 억원 (÷100)
+        if re.search(r"단위.*억원|억원.*단위|억원\)", snippet, re.I):
+            return 1.0          # 이미 억원
+        if re.search(r"단위.*천원|천원.*단위|천원\)", snippet, re.I):
+            return 100_000.0    # 천원 → 억원 (÷100,000)
+        if re.search(r"단위.*원|원.*단위", snippet, re.I):
+            return 1e8          # 원 → 억원 (÷1억)
+        return 100.0            # 기본값: 백만원
+
+    # ── 숫자 파싱 헬퍼 ───────────────────────────────────────────────────────
+    def _parse_cell(s: str) -> int | None:
+        s = s.strip().replace(",", "").replace(" ", "").replace("\xa0", "").replace("−", "-")
+        neg = s.startswith("(") and s.endswith(")")
+        s   = s.strip("()")
+        if not s or not s.lstrip("-").isdigit():
+            return None
+        v = int(s)
+        return -v if neg else v
+
+    depre: int | None = None
+    amort: int | None = None
+
+    try:
+        # ── HTML 파일 검색 (파일명 정렬 → 주석 파일 우선 도달 경향) ───────────
+        for name in sorted(zf.namelist()):
+            if not name.lower().endswith((".html", ".htm")):
+                continue
+            try:
+                html = zf.read(name).decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            if "감가상각비" not in html:
+                continue
+
+            unit_div = _detect_unit(html)
+            soup     = BeautifulSoup(html, "html.parser")
+
+            for row in soup.find_all("tr"):
+                cells      = row.find_all(["td", "th"])
+                if len(cells) < 2:
+                    continue
+                label = re.sub(r"\s+", "", cells[0].get_text())
+
+                # 감가상각비 (유형자산 / 사용권자산 포함)
+                if depre is None and re.fullmatch(r"감가상각비|유형자산감가상각비|사용권자산감가상각비", label):
+                    for cell in cells[1:]:
+                        v = _parse_cell(cell.get_text())
+                        if v is not None and v > 0:
+                            depre = round(v / unit_div)
+                            break
+
+                # 무형자산상각비
+                if amort is None and re.fullmatch(r"무형자산상각비|무형자산의?상각비|무형자산의?상각", label):
+                    for cell in cells[1:]:
+                        v = _parse_cell(cell.get_text())
+                        if v is not None and v > 0:
+                            amort = round(v / unit_div)
+                            break
+
+            if depre is not None:
+                break   # 첫 번째로 "감가상각비" 포함 HTML에서 탐색 완료
+
+    finally:
+        zf.close()
+
+    return depre, amort
 # ══════════════════════════════════════════
 #  DART API — 기업 개요
 # ══════════════════════════════════════════
@@ -1699,6 +1843,25 @@ def _render_fs_tab(corp: dict) -> None:
     if not data:
         st.error("재무데이터를 불러올 수 없습니다.")
         return
+
+    # ── D&A ZIP 폴백: fnlttSinglAcntAll 에서 D&A 항목이 누락된 연도에 대해
+    #    DART 사업보고서 ZIP의 재무제표 주석 HTML(현금흐름표 조정내역)을 파싱해 보완.
+    #    결과는 session_state 내 data dict를 직접 갱신 (현 세션 내 중복 다운로드 방지).
+    _missing_da_years = [
+        y for y in sorted(data.keys())
+        if data[y].get("cf", {}).get("depre") is None
+    ]
+    if _missing_da_years:
+        with st.spinner(
+            f"감가상각비 데이터 보완 중 — DART 재무제표 주석 분석 "
+            f"({corp['corp_name']}, {', '.join(_missing_da_years)})..."
+        ):
+            for _y in _missing_da_years:
+                _dep, _amt = _fetch_da_from_dart_zip(corp["corp_code"], int(_y))
+                if _dep is not None:
+                    data[_y]["cf"]["depre"] = _dep
+                    data[_y]["cf"]["amort"] = _amt
+
     years    = sorted(data.keys())
     fs_label_map = {"CFS": "연결재무제표", "OFS": "별도재무제표",
                     "CFS+OFS": "연결(최근)+별도(과거) 혼합", "-": ""}
@@ -2230,12 +2393,14 @@ def _render_valuation_card(fv: dict) -> None:
     cur = fv.get("current_price")
 
     def _upside(fair: float | None) -> str:
-        """현재가 대비 등락률 뱃지 HTML."""
-        if fair is None or cur is None or cur == 0:
+        """적정주가 대비 현재가 프리미엄 뱃지 HTML.
+        양수 = 현재가가 목표가보다 높다(고평가, 빨강), 음수 = 저평가(초록).
+        """
+        if fair is None or cur is None or cur == 0 or fair == 0:
             return ""
-        up  = (fair - cur) / cur * 100
+        up  = (cur - fair) / fair * 100        # 현재가가 목표가보다 얼마나 높은가
         sym = "▲" if up >= 0 else "▼"
-        clr = "#16a34a" if up >= 0 else "#dc2626"
+        clr = "#dc2626" if up >= 0 else "#16a34a"   # 고평가=빨강, 저평가=초록
         return (
             f'<span style="font-size:.68rem;color:{clr};margin-left:4px;">'
             f'{sym}{abs(up):.1f}%</span>'
@@ -2267,6 +2432,33 @@ def _render_valuation_card(fv: dict) -> None:
             f'background:{bg};margin:4px;">'
             f'<div style="font-size:.68rem;font-weight:600;color:{lbl_clr};">{label}</div>'
             f'{val_html}{s1}{s2}'
+            f'</div>'
+        )
+
+    def _cur_card() -> str:
+        """④ 현재가 기준 셀 HTML (보라색 테두리, 참조용)."""
+        if cur is None:
+            return ""
+        con = fv.get("consensus")
+        if con and con > 0:
+            prem = (cur - con) / con * 100
+            sym  = "▲" if prem >= 0 else "▼"
+            clr  = "#dc2626" if prem >= 0 else "#16a34a"
+            con_line = (
+                f'컨센서스 대비 '
+                f'<span style="color:{clr};font-weight:600;">{sym}{abs(prem):.1f}%</span>'
+            )
+        else:
+            con_line = ""
+        return (
+            f'<div style="flex:1;min-width:140px;text-align:center;'
+            f'padding:12px 8px;border:1.5px solid #7c3aed;border-radius:8px;'
+            f'background:#faf5ff;margin:4px;">'
+            f'<div style="font-size:.68rem;font-weight:600;color:#7c3aed;">④ 현재가 (기준)</div>'
+            f'<div style="font-size:1.05rem;font-weight:700;color:#1e293b;margin-top:6px;">'
+            f'{int(cur):,}원</div>'
+            f'<div style="font-size:.63rem;color:#64748b;margin-top:4px;">{con_line}</div>'
+            f'<div style="font-size:.60rem;color:#94a3b8;margin-top:1px;">실시간 시장가격</div>'
             f'</div>'
         )
 
@@ -2314,6 +2506,7 @@ def _render_valuation_card(fv: dict) -> None:
         + _fair_cell("① PER 적정주가",  fv.get("per_fair"),  per_sub1, per_sub2)
         + _fair_cell("② PBR 적정주가",  fv.get("pbr_fair"),  pbr_sub1, pbr_sub2)
         + _fair_cell("③ DCF 내재가치",  fv.get("dcf_fair"),  dcf_sub1, dcf_sub2)
+        + _cur_card()
         + _fair_cell("컨센서스 (평균)", fv.get("consensus"), con_sub1, con_sub2,
                      highlight=True)
         + f'</div></div>',
@@ -2376,83 +2569,70 @@ def main() -> None:
         )
         st.stop()
     # 스티키 헤더
-    st.markdown("""
-    <div style="position:sticky;top:0;z-index:999;
-                background:#fff;border-bottom:1px solid #e2e8f0;
-                box-shadow:0 1px 4px rgba(0,0,0,.06);
-                padding:14px 20px;margin:-1rem -1rem 1.2rem -1rem;
-                display:flex;align-items:center;gap:12px;">
-      <div style="width:38px;height:38px;border-radius:10px;flex-shrink:0;
-                  background:linear-gradient(135deg,#2563eb,#7c3aed);
-                  display:flex;align-items:center;justify-content:center;font-size:18px;">📊</div>
-      <div>
-        <div class="dart-title" style="font-size:1.15rem;font-weight:700;color:#1e293b;line-height:1.2;">
-          기업 주식 시황 및 재무 대시보드</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    col_inp, col_btn = st.columns([5, 1])
-    with col_inp:
-        st.text_input(
-            "",
-            placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
-            key="_search_input",
-            label_visibility="collapsed",
-            on_change=_on_search_enter,
-        )
-    with col_btn:
-        if st.button("🔍 검색", use_container_width=True, key="search_btn"):
-            _run_search(st.session_state.get("_search_input", ""))
+    st.markdown(
+        """
+        <style>
+        .stickytop { position: sticky; top: 0; z-index: 999; background: #f8fafc;
+                     padding: 8px 0 6px; border-bottom: 1px solid #e2e8f0; margin-bottom: 8px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container():
+        st.markdown('<div class="stickytop">', unsafe_allow_html=True)
+        col_logo, col_search, col_btn = st.columns([1, 5, 1])
+        with col_logo:
+            st.markdown(
+                '<span class="dart-title" style="font-size:1.1rem;font-weight:800;'
+                'color:#2563eb;white-space:nowrap;">📊 DART 기업 분석</span>',
+                unsafe_allow_html=True,
+            )
+        with col_search:
+            st.text_input(
+                "기업 검색",
+                placeholder="회사명 또는 종목코드 입력 (예: 삼성전자, 005930)",
+                key="_search_input",
+                on_change=_on_search_enter,
+                label_visibility="collapsed",
+            )
+        with col_btn:
+            if st.button("검색", use_container_width=True):
+                _run_search(st.session_state.get("_search_input", ""))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    corp = st.session_state.get("selected_corp")
     no_result_q = st.session_state.get("_search_no_result", "")
     if no_result_q:
-        st.warning(f"'{no_result_q}' 검색 결과가 없습니다.")
-    # 아직 아무 기업도 선택되지 않은 경우 → 안내 화면
-    corp = st.session_state.get("selected_corp")
+        st.warning(f"검색 결과가 없습니다: **{no_result_q}**")
     if not corp:
-        st.markdown("""
-        <div style="text-align:center;padding:3rem;color:#768390;">
-          <div style="font-size:2rem;margin-bottom:1rem;">📊</div>
-          <div>회사명 또는 종목코드를 입력하고 검색하세요</div>
-          <div style="font-size:.8rem;margin-top:.5rem;">K-IFRS 기준 최대 15년 재무제표를 불러옵니다</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.info("회사명 또는 종목코드를 입력하여 검색하세요.")
         return
-    with st.spinner("기업 정보 조회 중..."):
-        ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
-    cls_badge = (
-        f'<span style="background:#eff6ff;color:#2563eb;font-size:.68rem;'
-        f'border-radius:4px;padding:2px 7px;margin-left:8px;font-weight:600;">'
-        f'{ov.get("corp_cls","")}</span>'
-    ) if ov.get("corp_cls") else ""
-    meta_parts = []
-    if ov.get("ceo_nm"):  meta_parts.append(f'<span><b>대표</b> {ov["ceo_nm"]}</span>')
-    if ov.get("est_dt"):  meta_parts.append(f'<span><b>설립</b> {ov["est_dt"]}</span>')
-    if ov.get("acc_mt"):  meta_parts.append(f'<span><b>결산</b> {ov["acc_mt"]}</span>')
-    if ov.get("phn_no"):  meta_parts.append(f'<span><b>전화</b> {ov["phn_no"]}</span>')
-    sep        = '<span style="color:#94a3b8;margin:0 6px;">|</span>'
-    meta_html  = sep.join(meta_parts)
-    addr_html  = f'<div style="font-size:.72rem;color:#64748b;margin-top:4px;">📍 {ov["adres"]}</div>' if ov.get("adres") else ""
-    url_html   = (f'<div style="font-size:.72rem;margin-top:2px;">🌐 '
-                  f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a></div>'
-                  ) if ov.get("hm_url") else ""
-    st.markdown(f"""
-    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-                box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:12px 0;">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:{'8px' if meta_parts else '0'};">
-        <div style="background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:8px;
-                    padding:4px 12px;font-weight:700;color:#fff;flex-shrink:0;">
-          {corp['corp_name'][:2]}</div>
-        <div style="flex:1;">
-          <div style="font-weight:700;color:#1e293b;font-size:1.05rem;">{corp['corp_name']}{cls_badge}</div>
-          <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">
-            코드: {corp['corp_code']}
-            {'&nbsp;·&nbsp;상장: '+corp['stock_code'] if corp['stock_code'] else ''}</div>
-        </div>
-      </div>
-      {f'<div style="font-size:.78rem;color:#475569;margin-top:4px;">{meta_html}</div>' if meta_html else ''}
-      {addr_html}{url_html}
-    </div>
-    """, unsafe_allow_html=True)
+
+    ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
+
+    # 회사 정보 카드
+    st.markdown(
+        f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
+        f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin:0 0 10px 0;">'
+        f'<div style="display:flex;align-items:baseline;gap:10px;">'
+        f'<span style="font-size:1.25rem;font-weight:800;color:#1e293b;">{corp["corp_name"]}</span>'
+        + (f'<span style="font-size:.82rem;color:#2563eb;font-weight:600;">{corp.get("stock_code","")}</span>'
+           if corp.get("stock_code") else "")
+        + (f'<span style="font-size:.75rem;color:#64748b;">{ov.get("cls_label","")}</span>'
+           if ov.get("cls_label") else "")
+        + f'</div>'
+        + (f'<div style="font-size:.75rem;color:#475569;margin-top:4px;">{ov.get("sector","")}'
+           + (f' &nbsp;|&nbsp; {ov.get("product","")}' if ov.get("product") else "")
+           + f'</div>' if ov.get("sector") else "")
+        + (f'<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">'
+           + "  &nbsp;|&nbsp;  ".join(filter(None, [
+               ov.get("est_dt",""), ov.get("acc_mt",""), ov.get("adres",""),
+               f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a>'
+               if ov.get("hm_url") else "",
+           ])) + f'</div>' if any(ov.get(k) for k in ("est_dt","acc_mt","adres","hm_url")) else "")
+        + f'</div>',
+        unsafe_allow_html=True,
+    )
 
     if corp.get("stock_code"):
         with st.expander("⚙️ 적정주가 파라미터 설정", expanded=False):
