@@ -2808,96 +2808,98 @@ def main() -> None:
                 _wacc, _tg, _fcfg, _years, _CACHE_VER,
             )
 
-    # ── 회사 정보 카드 (좌) + M&A 시나리오 (우) ────────────────────────────
-    _col_info, _col_ma = st.columns([3, 2])
+    # ── 회사 정보 카드 ────────────────────────────────────────────────────
+    _badge = ""
+    if ov.get("cls_label"):
+        _bc = ("background:#dbeafe;color:#1d4ed8;" if ov.get("corp_cls_raw")=="Y"
+               else "background:#dcfce7;color:#15803d;" if ov.get("corp_cls_raw")=="K"
+               else "background:#f1f5f9;color:#475569;")
+        _badge = (f'<span style="font-size:.7rem;font-weight:700;padding:2px 8px;'
+                  f'border-radius:10px;{_bc}">{ov["cls_label"]}</span>')
+    st.markdown(
+        f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
+        f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;margin-bottom:10px;">'
+        f'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">'
+        f'<span style="font-size:1.15rem;font-weight:800;color:#1e293b;">{corp["corp_name"]}</span>'
+        + (f'<span style="font-size:.82rem;color:#2563eb;font-weight:600;">{corp.get("stock_code","")}</span>'
+           if corp.get("stock_code") else "")
+        + _badge
+        + f'</div>'
+        + (f'<div style="margin-top:5px;">'
+           + f'<span style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;'
+           + f'padding:1px 6px;font-size:.68rem;color:#64748b;">{ov["sector"]}</span>'
+           + f'</div>' if ov.get("sector") else "")
+        + (f'<div style="font-size:.72rem;color:#94a3b8;margin-top:6px;">'
+           + "  &nbsp;|&nbsp;  ".join(filter(None, [
+               ov.get("est_dt",""), ov.get("acc_mt",""), ov.get("adres",""),
+               f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a>'
+               if ov.get("hm_url") else "",
+           ])) + f'</div>' if any(ov.get(k) for k in ("est_dt","acc_mt","adres","hm_url")) else "")
+        + f'</div>',
+        unsafe_allow_html=True,
+    )
 
-    with _col_info:
-        _badge = ""
-        if ov.get("cls_label"):
-            _bc = ("background:#dbeafe;color:#1d4ed8;" if ov.get("corp_cls_raw")=="Y"
-                   else "background:#dcfce7;color:#15803d;" if ov.get("corp_cls_raw")=="K"
-                   else "background:#f1f5f9;color:#475569;")
-            _badge = (f'<span style="font-size:.7rem;font-weight:700;padding:2px 8px;'
-                      f'border-radius:10px;{_bc}">{ov["cls_label"]}</span>')
-        st.markdown(
-            f'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;'
-            f'box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px 18px;height:100%;box-sizing:border-box;">'
-            f'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">'
-            f'<span style="font-size:1.15rem;font-weight:800;color:#1e293b;">{corp["corp_name"]}</span>'
-            + (f'<span style="font-size:.82rem;color:#2563eb;font-weight:600;">{corp.get("stock_code","")}</span>'
-               if corp.get("stock_code") else "")
-            + _badge
-            + f'</div>'
-            + (f'<div style="margin-top:5px;">'
-               + f'<span style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;'
-               + f'padding:1px 6px;font-size:.68rem;color:#64748b;">{ov["sector"]}</span>'
-               + f'</div>' if ov.get("sector") else "")
-            + (f'<div style="font-size:.72rem;color:#94a3b8;margin-top:6px;">'
-               + "  &nbsp;|&nbsp;  ".join(filter(None, [
-                   ov.get("est_dt",""), ov.get("acc_mt",""), ov.get("adres",""),
-                   f'<a href="{ov["hm_url"]}" target="_blank" style="color:#2563eb;">{ov["hm_url"]}</a>'
-                   if ov.get("hm_url") else "",
-               ])) + f'</div>' if any(ov.get(k) for k in ("est_dt","acc_mt","adres","hm_url")) else "")
-            + f'</div>',
-            unsafe_allow_html=True,
-        )
+    # ── 기업 인수 비용 카드 ────────────────────────────────────────────────
+    if corp.get("stock_code"):
+        _cur_price  = _fv.get("current_price") if _fv and not _fv.get("error") else None
+        _shares     = _fv.get("shares")        if _fv and not _fv.get("error") else None
+        _mktcap_eok = round(_cur_price * _shares / 1e8, 0) if (_cur_price and _shares) else None
 
-    with _col_ma:
+        def _fmt_eok(v):
+            if v is None: return "–"
+            return f"{v/10000:.2f}조" if v >= 10000 else f"{int(v):,}억"
+
         with st.container(border=True):
-            st.markdown(
-                '<div style="font-size:.78rem;font-weight:700;color:#1e293b;margin-bottom:6px;">'
-                '🤝 M&A 인수 시나리오</div>',
-                unsafe_allow_html=True,
-            )
-            _ma1, _ma2 = st.columns(2)
-            _premium = _ma1.number_input(
-                "경영권 프리미엄 (%)", min_value=0.0, max_value=100.0,
-                value=25.0, step=1.0, key="ma_premium",
-                help="인수 시 시장가 대비 추가 지불 비율 (통상 20~40%)",
-            )
-            _synergy = _ma2.number_input(
-                "시너지 가치 (억원)", min_value=0, value=0, step=100,
-                key="ma_synergy",
-                help="비용절감·매출증가 등 인수 후 창출 가치",
-            )
-
-            # 계산
-            _cur_price  = _fv.get("current_price") if _fv and not _fv.get("error") else None
-            _shares     = _fv.get("shares")        if _fv and not _fv.get("error") else None
-            _mktcap_eok = round(_cur_price * _shares / 1e8, 0) if (_cur_price and _shares) else None
-            _prem_eok   = round(_mktcap_eok * _premium / 100, 0)    if _mktcap_eok else None
-            _total_eok  = round(_mktcap_eok * (1 + _premium/100) + _synergy, 0) if _mktcap_eok else None
-            _acq_per_sh = round(_total_eok * 1e8 / _shares, 0)      if (_total_eok and _shares) else None
-
-            def _fmt_eok(v):
-                if v is None: return "–"
-                return f"{v/10000:.2f}조" if v >= 10000 else f"{int(v):,}억"
-
-            if _mktcap_eok:
-                rows = [
-                    ("현재 시가총액",  _fmt_eok(_mktcap_eok), "#475569"),
-                    ("경영권 프리미엄", f"+{_fmt_eok(_prem_eok)} ({_premium:.0f}%)", "#b45309"),
-                    ("시너지 가치",    f"+{_fmt_eok(_synergy)}", "#059669"),
-                ]
-                tbl = "".join(
-                    f'<div style="display:flex;justify-content:space-between;'
-                    f'padding:3px 0;font-size:.72rem;border-bottom:1px solid #f1f5f9;">'
-                    f'<span style="color:#64748b;">{lbl}</span>'
-                    f'<span style="font-weight:600;color:{clr};">{val}</span></div>'
-                    for lbl, val, clr in rows
-                )
+            _hd, _inp = st.columns([2, 3])
+            with _hd:
                 st.markdown(
-                    tbl
-                    + f'<div style="display:flex;justify-content:space-between;'
-                    f'padding:5px 0 2px;margin-top:2px;">'
-                    f'<span style="font-size:.75rem;font-weight:700;color:#1e293b;">추정 인수가격</span>'
-                    f'<span style="font-size:.88rem;font-weight:800;color:#2563eb;">{_fmt_eok(_total_eok)}</span></div>'
-                    + (f'<div style="text-align:right;font-size:.65rem;color:#94a3b8;">'
-                       f'주당 {int(_acq_per_sh):,}원</div>' if _acq_per_sh else ""),
+                    '<div style="font-size:.85rem;font-weight:700;color:#1e293b;padding:4px 0 2px;">'
+                    '🏢 기업 인수 비용</div>'
+                    + (f'<div style="font-size:.72rem;color:#64748b;margin-top:2px;">'
+                       f'현재 시가총액: <b>{_fmt_eok(_mktcap_eok)}</b></div>' if _mktcap_eok else
+                       '<div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">시가총액 로딩 중...</div>'),
                     unsafe_allow_html=True,
                 )
-            else:
-                st.caption("시가총액 데이터 수집 후 표시됩니다.")
+            with _inp:
+                _ic1, _ic2 = st.columns(2)
+                _premium = _ic1.number_input(
+                    "경영권 프리미엄 (%)", min_value=0.0, max_value=100.0,
+                    value=25.0, step=1.0, key="ma_premium",
+                    help="인수 시 시장가 대비 추가 지불 비율 (통상 20~40%)",
+                )
+                _synergy = _ic2.number_input(
+                    "시너지 가치 (억원)", min_value=0, value=0, step=100,
+                    key="ma_synergy",
+                    help="비용절감·매출증가 등 인수 후 창출 가치",
+                )
+
+            if _mktcap_eok:
+                _prem_eok   = round(_mktcap_eok * _premium / 100, 0)
+                _total_eok  = round(_mktcap_eok * (1 + _premium / 100) + _synergy, 0)
+                _acq_per_sh = round(_total_eok * 1e8 / _shares, 0) if _shares else None
+
+                _rc1, _rc2, _rc3, _rc4 = st.columns(4)
+                def _result_cell(col, label, value, color="#1e293b", highlight=False):
+                    bg  = "#eff6ff" if highlight else "#f8fafc"
+                    bdr = "2px solid #2563eb" if highlight else "1px solid #e2e8f0"
+                    col.markdown(
+                        f'<div style="background:{bg};border:{bdr};border-radius:8px;'
+                        f'padding:10px 12px;text-align:center;">'
+                        f'<div style="font-size:.62rem;color:#64748b;font-weight:500;">{label}</div>'
+                        f'<div style="font-size:.95rem;font-weight:800;color:{color};margin-top:3px;">{value}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                _result_cell(_rc1, "현재 시가총액",   _fmt_eok(_mktcap_eok))
+                _result_cell(_rc2, f"경영권 프리미엄 ({_premium:.0f}%)", f"+{_fmt_eok(_prem_eok)}", "#b45309")
+                _result_cell(_rc3, "시너지 가치",      f"+{_fmt_eok(_synergy)}", "#059669")
+                _result_cell(_rc4, "추정 인수가격",    _fmt_eok(_total_eok), "#2563eb", highlight=True)
+                if _acq_per_sh:
+                    st.markdown(
+                        f'<div style="text-align:right;font-size:.65rem;color:#94a3b8;margin-top:3px;">'
+                        f'주당 인수가격 {int(_acq_per_sh):,}원</div>',
+                        unsafe_allow_html=True,
+                    )
 
     if _fv:
         _render_valuation_card(_fv)
