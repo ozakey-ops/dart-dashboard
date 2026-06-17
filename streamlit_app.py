@@ -514,7 +514,6 @@ def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
 # ══════════════════════════════════════════
 #  시장 데이터 (환율 + 미국채)
 # ══════════════════════════════════════════
-@st.cache_data(ttl=TTL_REALTIME, show_spinner=False)
 def fetch_market_data() -> dict:
     if not _YF_AVAILABLE:
         return {}
@@ -537,7 +536,7 @@ def fetch_market_data() -> dict:
             chg   = round(cur - prev, nd) if prev is not None else None
             raw[sym] = {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
         ref_date   = raw.get("USDKRW=X", {}).get("date", "")
-        fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return {
             "usd_krw":        raw.get("USDKRW=X", {}).get("value"),
             "jpy100_krw":     raw.get("JPYKRW=X",  {}).get("value"),
@@ -2767,7 +2766,7 @@ def main() -> None:
             + (
                 f'<div style="text-align:right;font-size:.62rem;color:#94a3b8;'
                 f'padding:2px 8px 4px;border-top:1px solid #f1f5f9;margin-top:2px;">'
-                f'수집: {md["fetched_at"]} · 기준일: {md.get("date","–")} · 5분 캐시'
+                f'수집: {md["fetched_at"]} · 기준일: {md.get("date","–")} · 실시간'
                 f'</div>'
             ),
             unsafe_allow_html=True,
