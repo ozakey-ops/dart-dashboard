@@ -35,14 +35,27 @@ except ImportError:
 # ══════════════════════════════════════════
 #  설정 상수
 # ══════════════════════════════════════════
-# API 키 — .streamlit/secrets.toml 또는 환경변수에서 로드
-# secrets.toml 예시:
-#   [secrets]
-#   DART_KEY = "your_dart_api_key_here"
+# ── API 키 — secrets.toml 도큐멘트로 관리 ───────────────────────────────
 try:
-    DART_KEY: str = st.secrets["DART_KEY"]
-except (KeyError, FileNotFoundError, Exception):
-    DART_KEY = os.environ.get("DART_KEY", "")
+    import tomllib                          # Python 3.11+ 표준 라이브러리
+except ImportError:
+    import tomli as tomllib                 # Python < 3.11: pip install tomli
+
+def _load_secrets() -> dict:
+    """프로젝트 루트 → .streamlit/ 순서로 secrets.toml 탐색."""
+    for _p in ("secrets.toml", ".streamlit/secrets.toml"):
+        try:
+            with open(_p, "rb") as _f:
+                return tomllib.load(_f)
+        except FileNotFoundError:
+            continue
+    return {}
+
+_secrets = _load_secrets()
+try:                                        # Streamlit Cloud Secrets UI 우선
+    DART_KEY: str = st.secrets.get("DART_KEY", "") or _secrets.get("DART_KEY", "")
+except Exception:
+    DART_KEY = _secrets.get("DART_KEY", "") or os.environ.get("DART_KEY", "")
 BASE         = "https://opendart.fss.or.kr/api"
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
