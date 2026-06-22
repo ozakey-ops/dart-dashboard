@@ -1165,7 +1165,8 @@ def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                         today_pp["PBR"] = round(today_price / (eq_t * 1e8 / shares), 2)
                     if today_pp:
                         per_pbr[today_label] = today_pp
-        return {"mktcap": mktcap, "per_pbr": per_pbr}
+        return {"mktcap": mktcap, "per_pbr": per_pbr,
+                "shares": shares, "current_price": today_price}
     except Exception as e:
         return {"__error__": str(e)}
 # ══════════════════════════════════════════
@@ -2221,6 +2222,7 @@ def _render_employee_tab(corp: dict) -> None:
 # ══════════════════════════════════════════
 #  3중 적정주가 산정 (PER · PBR · DCF)
 # ══════════════════════════════════════════
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def compute_fair_values(
     corp_code: str,
     stock_code: str,
@@ -2285,26 +2287,9 @@ def compute_fair_values(
             result["error"] = yf_data["__error__"]
             return result
 
-        resolved = _resolve_ticker(stock_code, corp_cls)
-        if resolved is None:
-            result["error"] = "ticker 없음 (KS/KQ 모두 시도)"
-            return result
-        ticker, _ = resolved
-        t = yf.Ticker(ticker)
-
-        shares: int | None = None
-        try:
-            shares = t.fast_info.shares
-        except Exception:
-            pass
-        if not shares:
-            shares = (t.info or {}).get("sharesOutstanding")
-
-        current_price: float | None = None
-        try:
-            current_price = float(t.fast_info.last_price)
-        except Exception:
-            pass
+        # fetch_yf_annual_data 캐시에서 shares·현재가 재사용 (중복 yf 호출 방지)
+        shares: int | None        = yf_data.get("shares")
+        current_price: float | None = yf_data.get("current_price")
 
         if not shares or shares <= 0:
             result["error"] = "발행주식수 없음"
