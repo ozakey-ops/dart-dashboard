@@ -42,8 +42,15 @@ except ImportError:
     import tomli as tomllib                 # Python < 3.11: pip install tomli
 
 def _load_secrets() -> dict:
-    """프로젝트 루트 → .streamlit/ 순서로 secrets.toml 탐색."""
-    for _p in ("secrets.toml", ".streamlit/secrets.toml"):
+    """실행 디렉토리 · 스크립트 위치 순으로 secrets.toml 탐색."""
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _candidates = [
+        "secrets.toml",
+        os.path.join(_script_dir, "secrets.toml"),
+        ".streamlit/secrets.toml",
+        os.path.join(_script_dir, ".streamlit", "secrets.toml"),
+    ]
+    for _p in _candidates:
         try:
             with open(_p, "rb") as _f:
                 return tomllib.load(_f)
@@ -52,10 +59,13 @@ def _load_secrets() -> dict:
     return {}
 
 _secrets = _load_secrets()
+_PLACEHOLDER = "여기에_DART_API_키_입력"
 try:                                        # Streamlit Cloud Secrets UI 우선
     DART_KEY: str = st.secrets.get("DART_KEY", "") or _secrets.get("DART_KEY", "")
 except Exception:
     DART_KEY = _secrets.get("DART_KEY", "") or os.environ.get("DART_KEY", "")
+if DART_KEY == _PLACEHOLDER:
+    DART_KEY = ""  # 플레이스홀더는 미설정으로 처리
 BASE         = "https://opendart.fss.or.kr/api"
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
@@ -527,6 +537,7 @@ def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
 # ══════════════════════════════════════════
 #  시장 데이터 (환율 + 미국채)
 # ══════════════════════════════════════════
+@st.cache_data(ttl=60, show_spinner=False)   # 60초 캐시 — rate limit 방지
 def fetch_market_data() -> dict:
     if not _YF_AVAILABLE:
         return {}
@@ -537,17 +548,24 @@ def fetch_market_data() -> dict:
             "USDJPY=X":  (1,   2),
             "^TNX":      (1,   3),
         }
+        # 4개 심볼을 한 번의 download 호출로 배치 조회 (rate limit 절감)
+        syms   = list(cfg.keys())
+        batch  = yf.download(syms, period="5d", interval="1d",
+                             auto_adjust=True, progress=False, threads=False)
         raw: dict[str, dict] = {}
+        close  = batch["Close"] if "Close" in batch.columns.get_level_values(0) else batch
         for sym, (mul, nd) in cfg.items():
-            hist = yf.Ticker(sym).history(period="5d", interval="1d", auto_adjust=True)
-            if hist.empty:
+            try:
+                col   = close[sym].dropna()
+                if col.empty:
+                    continue
+                dates = sorted(col.index)
+                cur   = round(float(col.iloc[-1]) * mul, nd)
+                prev  = round(float(col.iloc[-2]) * mul, nd) if len(dates) >= 2 else None
+                chg   = round(cur - prev, nd) if prev is not None else None
+                raw[sym] = {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
+            except Exception:
                 continue
-            hist  = hist.dropna(subset=["Close"])
-            dates = sorted(hist.index)
-            cur   = round(float(hist.loc[dates[-1],  "Close"]) * mul, nd)
-            prev  = round(float(hist.loc[dates[-2], "Close"]) * mul, nd) if len(dates) >= 2 else None
-            chg   = round(cur - prev, nd) if prev is not None else None
-            raw[sym] = {"value": cur, "chg": chg, "date": str(dates[-1])[:10]}
         ref_date   = raw.get("USDKRW=X", {}).get("date", "")
         fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return {
@@ -1006,6 +1024,18 @@ def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
         return data
     except Exception:
         return []
+def _yf_retry(fn, retries: int = 3, delay: float = 2.0):
+    """yfinance rate limit 대응 재시도 래퍼."""
+    for _i in range(retries):
+        try:
+            return fn()
+        except Exception as _e:
+            if _i < retries - 1 and "rate" in str(_e).lower():
+                time.sleep(delay * (_i + 1))
+            else:
+                raise
+    return None
+
 @st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
                          corp_code: str = "", _ver: int = _CACHE_VER) -> dict:
@@ -2583,13 +2613,13 @@ def main() -> None:
     if not DART_KEY:
         st.error(
             "**DART API 키가 설정되지 않았습니다.**\n\n"
-            "프로젝트 루트에 `.streamlit/secrets.toml` 파일을 생성하고 아래 내용을 입력하세요:\n\n"
+            "프로젝트 루트의 `secrets.toml` 파일에 아래 내용을 입력하세요:\n\n"
             "```toml\n"
-            "DART_KEY = \"your_dart_open_api_key\"\n"
+            "DART_KEY = \"발급받은_DART_API_키\"\n"
             "```\n\n"
             "DART API 키 발급: [DART OpenAPI](https://opendart.fss.or.kr/uat/uia/egovLoginUsr.do) "
-            "→ 회원가입 → API 신청\n\n"
-            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 동일하게 입력"
+            "→ 회원가입 → API 신청 (무료)\n\n"
+            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 위 내용을 붙여넣기"
         )
         st.stop()
     # 스티키 헤더
