@@ -35,14 +35,14 @@ except ImportError:
 # ══════════════════════════════════════════
 #  설정 상수
 # ══════════════════════════════════════════
-def _dk() -> str:
-    import base64
-    _e = b"OTAxZGU3N2RhMDU5Yjg1ZTA5NWE5OWFiOWYyYmFmMzI2NGY3MjgxZg=="
-    return base64.b64decode(_e).decode()
+# API 키 — .streamlit/secrets.toml 또는 환경변수에서 로드
+# secrets.toml 예시:
+#   [secrets]
+#   DART_KEY = "your_dart_api_key_here"
 try:
-    DART_KEY = st.secrets.get("DART_KEY", os.environ.get("DART_KEY", "")) or _dk()
-except Exception:
-    DART_KEY = os.environ.get("DART_KEY", "") or _dk()
+    DART_KEY: str = st.secrets["DART_KEY"]
+except (KeyError, FileNotFoundError, Exception):
+    DART_KEY = os.environ.get("DART_KEY", "")
 BASE         = "https://opendart.fss.or.kr/api"
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
@@ -2569,9 +2569,14 @@ def _run_search(q: str) -> None:
 def main() -> None:
     if not DART_KEY:
         st.error(
-            "DART API 키가 설정되지 않았습니다.\n\n"
-            "**로컬 실행:** `.streamlit/secrets.toml` 에 `DART_KEY = \"your_key\"` 추가\n\n"
-            "**Streamlit Cloud:** 앱 설정 → Secrets 에 동일하게 입력"
+            "**DART API 키가 설정되지 않았습니다.**\n\n"
+            "프로젝트 루트에 `.streamlit/secrets.toml` 파일을 생성하고 아래 내용을 입력하세요:\n\n"
+            "```toml\n"
+            "DART_KEY = \"your_dart_open_api_key\"\n"
+            "```\n\n"
+            "DART API 키 발급: [DART OpenAPI](https://opendart.fss.or.kr/uat/uia/egovLoginUsr.do) "
+            "→ 회원가입 → API 신청\n\n"
+            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 동일하게 입력"
         )
         st.stop()
     # 스티키 헤더
