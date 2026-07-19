@@ -11,6 +11,8 @@
 import functools
 import io
 import os
+import socket
+import ssl
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -60,14 +62,41 @@ def _load_secrets() -> dict:
     return {}
 
 _secrets = _load_secrets()
-_PLACEHOLDER = "여기에_DART_API_키_입력"
-try:                                        # Streamlit Cloud Secrets UI 우선
-    DART_KEY: str = st.secrets.get("DART_KEY", "") or _secrets.get("DART_KEY", "")
-except Exception:
-    DART_KEY = _secrets.get("DART_KEY", "") or os.environ.get("DART_KEY", "")
-if DART_KEY == _PLACEHOLDER:
-    DART_KEY = ""  # 플레이스홀더는 미설정으로 처리
+_PLACEHOLDERS = ("여기에_DART_API_키_입력", "여기에_KRX_API_키_입력",
+                 "발급받은_DART_API_키", "발급받은_KRX_API_키", "")
+
+
+def get_secret(name: str, default: str = "") -> str:
+    """API 키 조회 우선순위: Streamlit Secrets → secrets.toml → 환경변수.
+
+    Streamlit Cloud 에서는 앱 설정 → Secrets 탭에 아래처럼 등록한다:
+        DART_KEY = "발급받은 DART 오픈API 키"
+        KRX_KEY  = "발급받은 KRX 오픈API 인증키"
+    """
+    val = ""
+    try:                                     # Streamlit Cloud Secrets UI 우선
+        val = str(st.secrets.get(name, "") or "")
+    except Exception:
+        val = ""
+    if not val:
+        val = str(_secrets.get(name, "") or "")
+    if not val:
+        val = os.environ.get(name, "") or ""
+    val = val.strip()
+    return default if val in _PLACEHOLDERS else val
+
+
+DART_KEY: str = get_secret("DART_KEY")
+# KRX 오픈API 인증키 — 별칭(KRX_AUTH_KEY / KRX_API_KEY)도 허용
+KRX_KEY: str = get_secret("KRX_KEY") or get_secret("KRX_AUTH_KEY") or get_secret("KRX_API_KEY")
 BASE         = "https://opendart.fss.or.kr/api"
+# KRX Data Marketplace 오픈API (주식 부문)
+KRX_BASE     = "https://data-dbg.krx.co.kr/svc/apis/sto"
+KRX_ENDPOINTS = [           # (엔드포인트, 시장명, DART corp_cls 대응코드)
+    ("stk_isu_base_info", "KOSPI",  "Y"),
+    ("ksq_isu_base_info", "KOSDAQ", "K"),
+    ("knx_isu_base_info", "KONEX",  "N"),
+]
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
 # 캐시 TTL 상수 (초)
@@ -77,7 +106,7 @@ TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
-_CACHE_VER = 27
+_CACHE_VER = 29
 # 실패 결과 재시도 주기 (초) — 빈 응답을 TTL 내내 캐시하지 않도록 제어
 FAIL_RETRY_TTL = 120
 
@@ -449,22 +478,215 @@ def _section_header(title: str, sub: str = "") -> None:
 # ══════════════════════════════════════════
 #  DART API — 기업 목록
 # ══════════════════════════════════════════
-def _dart_get(path: str, params: dict, timeout: tuple = (10, 60)) -> requests.Response:
-    """DART API GET 래퍼 — SSL/연결 오류 시 verify=False 재시도."""
-    url = f"{BASE}/{path}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=True)
-    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
-        # Streamlit Cloud 등 해외 서버에서 한국 정부 인증서 검증 실패 시 재시도
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
+# ── DART 전송 계층 ────────────────────────────────────────────
+# Streamlit Cloud(해외 리전) → opendart.fss.or.kr 구간에서 자주 발생하는
+# ① IPv6 경로 블랙홀  ② TLS legacy renegotiation 거부  ③ 인증서 체인 검증 실패
+# 세 가지를 순차적으로 우회한다.
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-@st.cache_resource(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
-def load_corp_list() -> list[dict]:
-    r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY})
+# ① IPv6 우회 — 국내 공공 서버는 IPv6 경로에서 연결이 끊기는 사례가 많다
+try:
+    import urllib3.util.connection as _u3conn
+    _u3conn.allowed_gai_family = lambda: socket.AF_INET      # IPv4 강제
+except Exception:
+    pass
+
+_UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
+_OP_LEGACY_SERVER_CONNECT = 0x4      # ssl.OP_LEGACY_SERVER_CONNECT (Py3.12+ 상수 부재 대비)
+
+
+class _DartTLSAdapter(requests.adapters.HTTPAdapter):
+    """구형 TLS 재협상을 허용하는 어댑터 (OpenSSL 3.x + 국내 공공 서버 조합 대응)."""
+
+    def __init__(self, verify: bool = True, **kw):
+        self._verify_peer = verify
+        super().__init__(**kw)
+
+    def _ctx(self) -> ssl.SSLContext:
+        ctx = ssl.create_default_context()
+        ctx.options |= _OP_LEGACY_SERVER_CONNECT
+        try:
+            ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+        except ssl.SSLError:
+            pass
+        if not self._verify_peer:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def init_poolmanager(self, *a, **kw):
+        kw["ssl_context"] = self._ctx()
+        return super().init_poolmanager(*a, **kw)
+
+    def proxy_manager_for(self, *a, **kw):
+        kw["ssl_context"] = self._ctx()
+        return super().proxy_manager_for(*a, **kw)
+
+
+@st.cache_resource(show_spinner=False)
+def _dart_sessions() -> list[tuple[str, requests.Session]]:
+    """(라벨, 세션) 목록 — 앞에서부터 순서대로 시도한다."""
+    from urllib3.util.retry import Retry
+    out: list[tuple[str, requests.Session]] = []
+    specs = [
+        ("standard",   None,  True),    # 기본 TLS + 인증서 검증
+        ("legacy-tls", True,  True),    # legacy renegotiation 허용
+        ("no-verify",  True,  False),   # 인증서 검증 생략 (최후 수단)
+    ]
+    for label, use_adapter, verify in specs:
+        sess = requests.Session()
+        sess.headers.update(_UA)
+        sess.verify = verify
+        retry = Retry(total=2, connect=2, read=1, backoff_factor=0.8,
+                      status_forcelist=(429, 500, 502, 503, 504),
+                      allowed_methods=frozenset(["GET"]))
+        adapter = (_DartTLSAdapter(verify=verify, max_retries=retry)
+                   if use_adapter else requests.adapters.HTTPAdapter(max_retries=retry))
+        sess.mount("https://", adapter)
+        sess.mount("http://", requests.adapters.HTTPAdapter(max_retries=retry))
+        out.append((label, sess))
+    return out
+
+
+# 직전에 성공한 세션을 기억해 매 요청마다 실패 경로를 재시도하지 않는다
+_DART_OK_SESSION: dict[str, int] = {"idx": 0}
+
+
+def _dart_get(path: str, params: dict, timeout: tuple = (15, 90)) -> requests.Response:
+    """DART API GET 래퍼 — 전송 방식을 단계적으로 낮춰가며 재시도."""
+    url = f"{BASE}/{path}"
+    sessions = _dart_sessions()
+    order = list(range(len(sessions)))
+    start = _DART_OK_SESSION["idx"]
+    order = order[start:] + order[:start]          # 성공했던 방식부터
+    last_exc: Exception | None = None
+    for i in order:
+        label, sess = sessions[i]
+        try:
+            r = sess.get(url, params=params, timeout=timeout)
+            _DART_OK_SESSION["idx"] = i
+            return r
+        except (requests.exceptions.SSLError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as e:
+            last_exc = e
+            _log_err(f"_dart_get[{label}]:{path}", e)
+            continue
+    raise last_exc if last_exc else RuntimeError("DART 요청 실패")
+
+
+def dart_connection_error_detail() -> str:
+    """마지막 연결 실패 원인 요약 (UI 진단용)."""
+    for msg in reversed(_LAST_ERRORS):
+        if "_dart_get" in msg:
+            return msg
+    return ""
+
+# ══════════════════════════════════════════
+#  KRX 오픈API — 상장종목 목록 (1차 소스)
+# ══════════════════════════════════════════
+# 최근 조회 메타 (UI 표시용)
+_KRX_META: dict[str, object] = {"bas_dd": "", "count": 0, "source": ""}
+
+
+def _krx_get(endpoint: str, params: dict, timeout: tuple = (15, 60)) -> dict:
+    """KRX 오픈API 호출 — 인증키는 AUTH_KEY 헤더로 전달.
+
+    GET 우선, 405/400 응답 시 POST(JSON)로 재시도한다.
+    """
+    if not KRX_KEY:
+        raise RuntimeError("KRX_KEY 미설정")
+    url = f"{KRX_BASE}/{endpoint}"
+    headers = {"AUTH_KEY": KRX_KEY, "Accept": "application/json"}
+    _, sess = _dart_sessions()[_DART_OK_SESSION["idx"]]      # 재시도·TLS 폴백 재사용
+    r = sess.get(url, params=params, headers=headers, timeout=timeout)
+    if r.status_code in (400, 404, 405, 415):
+        r = sess.post(url, json=params,
+                      headers={**headers, "Content-Type": "application/json"},
+                      timeout=timeout)
+    if r.status_code == 401:
+        raise RuntimeError("KRX 인증 실패(401) — 인증키가 틀렸거나 해당 API 이용신청이 "
+                           "'승인대기' 상태입니다. KRX 마이페이지 → 이용현황을 확인하세요.")
     r.raise_for_status()
+    return r.json()
+
+
+def _krx_recent_bas_dd(max_back: int = 10) -> list[str]:
+    """조회 기준일 후보 — 휴장일·미갱신(전일분은 익일 오전 반영) 대응."""
+    today = datetime.now()
+    out = []
+    for d in range(1, max_back + 1):
+        day = today - timedelta(days=d)
+        if day.weekday() < 5:                                # 주말 제외
+            out.append(day.strftime("%Y%m%d"))
+    return out
+
+
+@st.cache_resource(ttl=TTL_WEEKLY, show_spinner="KRX 상장종목 목록 로딩 중...")
+def load_krx_corp_list() -> list[dict]:
+    """KRX 종목기본정보(KOSPI·KOSDAQ·KONEX)에서 상장사 목록을 구성."""
+    corps: list[dict] = []
+    used_dd = ""
+    failed_markets: list[str] = []
+    for bas_dd in _krx_recent_bas_dd():
+        rows_total = 0
+        tmp: list[dict] = []
+        failed_markets = []
+        for endpoint, market, cls_code in KRX_ENDPOINTS:
+            try:
+                data = _krx_get(endpoint, {"basDd": bas_dd})
+            except Exception as e:
+                _log_err(f"_krx_get:{endpoint}:{bas_dd}", e)
+                failed_markets.append(market)
+                continue
+            rows = data.get("OutBlock_1") or data.get("outBlock_1") or []
+            rows_total += len(rows)
+            for it in rows:
+                short = (it.get("ISU_SRT_CD") or "").strip()
+                name  = (it.get("ISU_ABBRV") or it.get("ISU_NM") or "").strip()
+                if not short or not name:
+                    continue
+                tmp.append({
+                    "corp_code":  "",                        # DART 코드는 이후 매핑
+                    "corp_name":  name,
+                    "stock_code": short,
+                    "_lname":     name.lower(),
+                    "market":     market,
+                    "corp_cls":   cls_code,
+                    "isin":       (it.get("ISU_CD") or "").strip(),
+                    "full_name":  (it.get("ISU_NM") or "").strip(),
+                    "list_dd":    (it.get("LIST_DD") or "").strip(),
+                    "sect":       (it.get("SECT_TP_NM") or "").strip(),
+                })
+        if rows_total:
+            corps, used_dd = tmp, bas_dd
+            break
+    if not corps:
+        raise RuntimeError("KRX 상장종목 목록을 가져오지 못했습니다 "
+                           "(인증키·API 이용신청 승인 상태를 확인하세요).")
+    # 종목코드 중복 제거 (우선주 등 동일 단축코드는 없으나 방어)
+    seen: set[str] = set()
+    corps = [c for c in corps if not (c["stock_code"] in seen or seen.add(c["stock_code"]))]
+    _KRX_META["bas_dd"]  = used_dd
+    _KRX_META["count"]   = len(corps)
+    _KRX_META["partial"] = ", ".join(failed_markets)   # 일부 시장만 실패한 경우
+    return corps
+
+
+# ══════════════════════════════════════════
+#  DART corpCode.xml — corp_code 매핑 전용 (지연 로딩)
+# ══════════════════════════════════════════
+@st.cache_resource(ttl=TTL_WEEKLY, show_spinner="DART 기업코드 매핑 로딩 중... (최초 1회)")
+def load_dart_corp_records() -> list[dict]:
+    """DART corpCode.xml — DART 계열 API가 요구하는 8자리 corp_code 원본."""
+    # corpCode.xml 은 20MB급 ZIP — 연결/읽기 타임아웃을 넉넉히 준다
+    r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY}, timeout=(20, 180))
+    r.raise_for_status()
+    if not r.content[:2] == b"PK":
+        # ZIP이 아니면 대개 JSON 형태의 오류 응답 (키 오류·사용한도 초과 등)
+        raise RuntimeError(f"DART 응답이 ZIP이 아님: {r.text[:200]}")
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         with z.open("CORPCODE.xml") as f:
             xml_content = f.read().decode("utf-8")
@@ -480,9 +702,57 @@ def load_corp_list() -> list[dict]:
     return corps
 
 
+
+@st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
+def dart_code_map() -> dict:
+    """{종목코드→corp_code}, {회사명(소문자)→corp_code} 매핑."""
+    recs = load_dart_corp_records()
+    by_stock, by_name = {}, {}
+    for c in recs:
+        if c["stock_code"]:
+            by_stock.setdefault(c["stock_code"], c["corp_code"])
+        by_name.setdefault(c["_lname"], c["corp_code"])
+    return {"by_stock": by_stock, "by_name": by_name}
+
+
+def attach_corp_code(corp: dict) -> dict:
+    """선택된 종목에 DART corp_code 를 주입 (없으면 corp_code="" 유지)."""
+    if corp.get("corp_code"):
+        return corp
+    try:
+        m = dart_code_map()
+    except Exception as e:
+        _log_err("dart_code_map", e)
+        return corp
+    code = m["by_stock"].get(corp.get("stock_code", "")) or m["by_name"].get(corp.get("_lname", ""))
+    if code:
+        corp = {**corp, "corp_code": code}
+    return corp
+
+
+def corp_list_source() -> str:
+    """현재 사용 중인 기업목록 소스 라벨."""
+    return st.session_state.get("_corp_src", "")
+
+
+@st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
+def load_corp_list() -> list[dict]:
+    """기업 목록 — KRX 우선, 실패 시 DART corpCode.xml 로 폴백."""
+    if KRX_KEY:
+        try:
+            corps = load_krx_corp_list()
+            _KRX_META["source"] = "KRX"
+            return corps
+        except Exception as e:
+            _log_err("load_krx_corp_list", e)
+            load_krx_corp_list.clear()
+    _KRX_META["source"] = "DART"
+    return load_dart_corp_records()
+
+
 @st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
 def _corp_index() -> dict:
-    """검색용 인덱스 — 매 rerun 마다 10만 건을 재순회하지 않도록 1회만 구성."""
+    """검색용 인덱스 — 매 rerun 마다 전체 목록을 재순회하지 않도록 1회만 구성."""
     corps = load_corp_list()
     by_stock: dict[str, list[dict]] = {}
     by_name:  dict[str, list[dict]] = {}
@@ -516,16 +786,19 @@ def search_corps(query: str, all_corps: list[dict] | None = None) -> list[dict]:
             matches = list(exact)
         else:
             matches = [c for c in corps if ql in c.get("_lname", c["corp_name"].lower())]
-    # 중복 제거 (corp_code 기준) — 인덱스 병합·동명 법인 대응
+    # 중복 제거 — KRX 목록은 corp_code 가 비어 있으므로 종목코드+상호로 식별
     seen: set[str] = set()
-    matches = [c for c in matches if not (c["corp_code"] in seen or seen.add(c["corp_code"]))]
+    def _uid(c: dict) -> str:
+        return c.get("corp_code") or f'{c.get("stock_code","")}|{c["corp_name"]}'
+    matches = [c for c in matches if not (_uid(c) in seen or seen.add(_uid(c)))]
     if not matches:
         return []
     matches = list(matches)
     matches.sort(key=lambda c: (
         c["corp_name"].lower() != ql,                                     # 정확히 일치 먼저
+        not c["corp_name"].lower().startswith(ql),                        # 접두 일치 먼저
         not bool(c["stock_code"]),                                        # 상장 기업 먼저
-        -(int(c["corp_code"]) if c["corp_code"].isdigit() else 0),        # 최신 등록 법인 먼저
+        len(c["corp_name"]),                                              # 짧은 상호 먼저
         c["corp_name"],
     ))
     return matches[:20]
@@ -2686,7 +2959,11 @@ def _run_search(q: str, force: bool = False) -> None:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
         st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
-        st.error("DART API 서버에 연결할 수 없습니다. 네트워크 상태를 확인하세요.")
+        st.session_state["_conn_failed"] = True
+        st.error(
+            "DART API 서버에 연결할 수 없습니다. "
+            "일시적 장애일 수 있으니 아래 **연결 재시도** 버튼을 눌러주세요."
+        )
         return
     except requests.exceptions.Timeout:
         st.session_state["selected_corp"] = None
@@ -2709,14 +2986,17 @@ def _run_search(q: str, force: bool = False) -> None:
         st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
         st.error(f"기업 목록 조회 중 오류 발생: {e}")
         return
+    st.session_state["_conn_failed"] = False
+    st.session_state["_corp_src"] = str(_KRX_META.get("source", ""))
     if results:
-        st.session_state["selected_corp"]     = results[0]
+        # DART 계열 API는 8자리 corp_code 가 필요 → 선택 시점에 지연 매핑
+        st.session_state["selected_corp"]     = attach_corp_code(results[0])
         st.session_state["_search_no_result"] = ""
     else:
         st.session_state["selected_corp"]     = None
         st.session_state["_search_no_result"] = q
 def main() -> None:
-    if not DART_KEY:
+    if not DART_KEY and not KRX_KEY:
         st.error(
             "**DART API 키가 설정되지 않았습니다.**\n\n"
             "프로젝트 루트의 `secrets.toml` 파일에 아래 내용을 입력하세요:\n\n"
@@ -2725,7 +3005,16 @@ def main() -> None:
             "```\n\n"
             "DART API 키 발급: [DART OpenAPI](https://opendart.fss.or.kr/uat/uia/egovLoginUsr.do) "
             "→ 회원가입 → API 신청 (무료)\n\n"
-            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 위 내용을 붙여넣기"
+            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 위 내용을 붙여넣기\n\n"
+            "---\n"
+            "상장종목 목록을 KRX 오픈API로 받으려면 `KRX_KEY` 도 함께 등록하세요:\n\n"
+            "```toml\n"
+            "DART_KEY = \"발급받은 DART 오픈API 키\"\n"
+            "KRX_KEY  = \"발급받은 KRX 오픈API 인증키\"\n"
+            "```\n\n"
+            "KRX 인증키 발급: [KRX Data Marketplace](https://openapi.krx.co.kr) "
+            "→ 회원가입 → API 인증키 신청 → **종목기본정보(유가증권·코스닥·코넥스) 이용신청 승인** "
+            "(승인 전에는 401이 반환됩니다)"
         )
         st.stop()
     # 스티키 헤더
@@ -2761,12 +3050,60 @@ def main() -> None:
                 _run_search(st.session_state.get("_search_input", ""))
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # 연결 실패 시 캐시를 비우고 재시도할 수 있는 진단 패널
+    if st.session_state.get("_conn_failed"):
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            if st.button("🔄 연결 재시도", use_container_width=True):
+                load_corp_list.clear()
+                load_krx_corp_list.clear()
+                load_dart_corp_records.clear()
+                dart_code_map.clear()
+                _corp_index.clear()
+                _dart_sessions.clear()
+                _DART_OK_SESSION["idx"] = 0
+                st.session_state["_conn_failed"] = False
+                st.session_state["_search_last_q"] = None
+                _run_search(st.session_state.get("_search_input", ""), force=True)
+                st.rerun()
+        with c2:
+            detail = dart_connection_error_detail()
+            if detail:
+                with st.expander("연결 실패 상세"):
+                    st.code(detail)
+
     corp = st.session_state.get("selected_corp")
+    if corp and not corp.get("corp_code"):
+        corp = attach_corp_code(corp)
+        st.session_state["selected_corp"] = corp
     no_result_q = st.session_state.get("_search_no_result", "")
     if no_result_q:
         st.warning(f"검색 결과가 없습니다: **{no_result_q}**")
     if not corp:
-        st.info("회사명 또는 종목코드를 입력하여 검색하세요.")
+        _src = corp_list_source()
+        _hint = ""
+        if _src == "KRX":
+            _hint = f'  ·  KRX 상장종목 {_KRX_META.get("count", 0):,}건 (기준일 {_KRX_META.get("bas_dd", "-")})'
+            if _KRX_META.get("partial"):
+                _hint += f'  ·  ⚠ {_KRX_META["partial"]} 조회 실패'
+        elif _src == "DART":
+            _hint = "  ·  DART 기업목록 사용 중 (KRX_KEY 미설정 또는 조회 실패)"
+        st.info(f"회사명 또는 종목코드를 입력하여 검색하세요.{_hint}")
+        return
+
+    if not corp.get("corp_code"):
+        st.error(
+            f"**{corp['corp_name']}** 의 DART 기업코드(corp_code)를 찾지 못했습니다. "
+            "재무·공시·주주 데이터는 DART 기업코드가 있어야 조회됩니다."
+        )
+        if st.button("🔄 DART 기업코드 매핑 다시 받기"):
+            load_dart_corp_records.clear()
+            dart_code_map.clear()
+            st.session_state["selected_corp"] = attach_corp_code(corp)
+            st.rerun()
+        if _LAST_ERRORS:
+            with st.expander("진단 로그"):
+                st.code("\n".join(_LAST_ERRORS[-10:]))
         return
 
     ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
@@ -2781,7 +3118,7 @@ def main() -> None:
         with st.spinner("적정주가 산정 중..."):
             _fv = compute_fair_values(
                 corp["corp_code"], corp.get("stock_code", ""),
-                ov.get("corp_cls_raw", "Y"),
+                ov.get("corp_cls_raw") or corp.get("corp_cls", "Y"),
                 _wacc, _tg, _fcfg, _years,
             )
 
@@ -2935,7 +3272,7 @@ def main() -> None:
             render_stock_chart(
                 corp.get("stock_code", ""),
                 corp["corp_name"],
-                ov.get("corp_cls_raw", "Y"),
+                ov.get("corp_cls_raw") or corp.get("corp_cls", "Y"),
                 corp_code=corp.get("corp_code", ""),
             )
         except Exception as e:
