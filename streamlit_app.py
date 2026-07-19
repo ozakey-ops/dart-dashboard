@@ -77,7 +77,7 @@ TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
-_CACHE_VER = 26
+_CACHE_VER = 27
 # 실패 결과 재시도 주기 (초) — 빈 응답을 TTL 내내 캐시하지 않도록 제어
 FAIL_RETRY_TTL = 120
 
@@ -127,22 +127,30 @@ def versioned_cache(ttl: int, fail_ttl: int = FAIL_RETRY_TTL, spinner=False):
        TTL(최대 1일) 동안 캐시에 박혀 "데이터가 안 나오는" 현상 방지.
     """
     def decorator(fn):
-        # ⚠️ 인자명이 "_"로 시작하면 Streamlit이 해시에서 제외한다.
+        # ⚠️ 주의 1: 인자명이 "_"로 시작하면 Streamlit이 해시에서 제외한다.
         #    (원본 코드의 `_ver` 가 캐시 무효화에 전혀 작동하지 않던 이유)
-        #    따라서 ver / retry 는 반드시 밑줄 없는 이름이어야 한다.
+        #    → ver / retry 는 반드시 밑줄 없는 이름이어야 한다.
+        # ⚠️ 주의 2: Streamlit은 함수 키를 module + qualname + 소스코드 해시로 만든다.
+        #    아래 _cached 는 모든 데코레이션 대상이 동일한 qualname/소스를 갖기 때문에
+        #    함수 키가 전부 같아진다. 따라서 fname 을 "해시되는 인자"로 넘겨
+        #    함수별 네임스페이스를 분리해야 한다.
+        #    (누락 시 인자 시그니처가 같은 서로 다른 함수끼리 캐시가 충돌한다.
+        #     예: fetch_major_shareholders(corp_code) ↔ fetch_major_shareholder_history(corp_code))
         @st.cache_data(ttl=ttl, show_spinner=spinner)
-        def _cached(ver: int, retry: int, *args, **kwargs):
+        def _cached(fname: str, ver: int, retry: int, *args, **kwargs):
             return fn(*args, **kwargs)
+
+        fn_id = f"{fn.__module__}.{fn.__qualname__}"
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             kwargs.pop("_ver", None)          # 레거시 호출부 호환
-            key = f"{fn.__module__}.{fn.__qualname__}|{args!r}|{sorted(kwargs.items())!r}"
+            key = f"{fn_id}|{args!r}|{sorted(kwargs.items())!r}"
             now_win = int(time.time() // fail_ttl)
             prev_tok, prev_win = _FAIL_MEMO.get(key, (0, None))
             # 실패했던 호출은 fail_ttl 창이 바뀔 때만 토큰을 갱신해 재시도한다
             retry = prev_tok if (prev_win is None or prev_win == now_win) else now_win
-            res = _cached(_CACHE_VER, retry, *args, **kwargs)
+            res = _cached(fn_id, _CACHE_VER, retry, *args, **kwargs)
             if _is_empty_result(res):
                 _FAIL_MEMO[key] = (retry, now_win)
             else:
@@ -1519,8 +1527,8 @@ def _render_shareholder_section(corp_code: str) -> None:
         rows_html = ""
         for i, sh in enumerate(shareholders):
             bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
-            ratio_str  = f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-"
-            shares_str = f"{sh['shares']:,}" if sh["shares"] else "-"
+            ratio_str  = f"{sh['ratio']:.2f}%" if sh.get("ratio") is not None else "-"
+            shares_str = f"{sh['shares']:,}" if sh.get("shares") else "-"
             knd_badge  = (
                 f'<span style="font-size:.62rem;background:#e0f2fe;color:#0369a1;'
                 f'border-radius:4px;padding:1px 5px;margin-left:4px;">{sh["stock_knd"]}</span>'
@@ -1528,7 +1536,7 @@ def _render_shareholder_section(corp_code: str) -> None:
             rows_html += (
                 f'<tr style="background:{bg};">'
                 f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">'
-                f'{sh["name"]}{knd_badge}</td>'
+                f'{sh.get("name", "-")}{knd_badge}</td>'
                 f'<td style="padding:5px 8px;font-size:.75rem;color:#64748b;text-align:center;">{sh["relation"]}</td>'
                 f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;white-space:nowrap;">{shares_str}</td>'
                 f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;white-space:nowrap;">{ratio_str}</td>'
@@ -1555,11 +1563,11 @@ def _render_shareholder_section(corp_code: str) -> None:
         rows_h = ""
         for i, sh in enumerate(sh_history):
             bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
-            shares_str = f"{sh['shares']:,}" if sh["shares"] is not None else "-"
-            ratio_str  = f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-"
+            shares_str = f"{sh['shares']:,}" if sh.get("shares") is not None else "-"
+            ratio_str  = f"{sh['ratio']:.2f}%" if sh.get("ratio") is not None else "-"
             rows_h += (
                 f'<tr style="background:{bg};">'
-                f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh["nm"]}</td>'
+                f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh.get("nm", "-")}</td>'
                 f'<td style="padding:5px 8px;font-size:.72rem;color:#64748b;text-align:center;white-space:nowrap;">{sh.get("chg_on") or "-"}</td>'
                 f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{shares_str}</td>'
                 f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;">{ratio_str}</td>'
