@@ -8,6 +8,7 @@
 # ══════════════════════════════════════════
 #  표준 라이브러리 imports
 # ══════════════════════════════════════════
+import functools
 import io
 import os
 import time
@@ -76,7 +77,82 @@ TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
-_CACHE_VER = 25
+_CACHE_VER = 26
+# 실패 결과 재시도 주기 (초) — 빈 응답을 TTL 내내 캐시하지 않도록 제어
+FAIL_RETRY_TTL = 120
+
+# ══════════════════════════════════════════
+#  캐시 인프라
+# ══════════════════════════════════════════
+# 스레드에서 캐시 함수 호출 시 ScriptRunContext 누락 방지
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except Exception:                                    # 버전 차이 대비
+    def add_script_run_ctx(thread=None, ctx=None):   # type: ignore
+        return thread
+    def get_script_run_ctx():                        # type: ignore
+        return None
+
+# 최근 실패 기록 {호출키: 실패시각 window} — 프로세스 전역
+_FAIL_MEMO: dict[str, tuple[int, int]] = {}
+# 디버그용 최근 오류 (UI 하단 진단 패널에서 확인)
+_LAST_ERRORS: list[str] = []
+
+
+def _log_err(where: str, e: Exception) -> None:
+    msg = f"{datetime.now():%H:%M:%S} [{where}] {type(e).__name__}: {e}"
+    _LAST_ERRORS.append(msg)
+    del _LAST_ERRORS[:-30]
+
+
+def _is_empty_result(v) -> bool:
+    """빈 결과(=조회 실패 가능성) 판정 — 실패는 짧게만 캐시한다."""
+    if v is None:
+        return True
+    if isinstance(v, dict):
+        return (not v) or ("__error__" in v) or bool(v.get("error"))
+    if isinstance(v, tuple):                       # fetch_disclosures → (list, label)
+        return len(v) == 0 or _is_empty_result(v[0])
+    if isinstance(v, (list, set, str)):
+        return len(v) == 0
+    return False
+
+
+def versioned_cache(ttl: int, fail_ttl: int = FAIL_RETRY_TTL, spinner=False):
+    """st.cache_data 래퍼.
+
+    ① _ver 를 호출부가 아니라 데코레이터가 자동 주입 →
+       `f(x)` 와 `f(x, _ver=25)` 가 서로 다른 캐시 키로 갈라지는 문제를 원천 차단.
+    ② 빈 결과(실패)는 fail_ttl(기본 120초) 뒤 자동 재시도 → 실패 응답이
+       TTL(최대 1일) 동안 캐시에 박혀 "데이터가 안 나오는" 현상 방지.
+    """
+    def decorator(fn):
+        # ⚠️ 인자명이 "_"로 시작하면 Streamlit이 해시에서 제외한다.
+        #    (원본 코드의 `_ver` 가 캐시 무효화에 전혀 작동하지 않던 이유)
+        #    따라서 ver / retry 는 반드시 밑줄 없는 이름이어야 한다.
+        @st.cache_data(ttl=ttl, show_spinner=spinner)
+        def _cached(ver: int, retry: int, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            kwargs.pop("_ver", None)          # 레거시 호출부 호환
+            key = f"{fn.__module__}.{fn.__qualname__}|{args!r}|{sorted(kwargs.items())!r}"
+            now_win = int(time.time() // fail_ttl)
+            prev_tok, prev_win = _FAIL_MEMO.get(key, (0, None))
+            # 실패했던 호출은 fail_ttl 창이 바뀔 때만 토큰을 갱신해 재시도한다
+            retry = prev_tok if (prev_win is None or prev_win == now_win) else now_win
+            res = _cached(_CACHE_VER, retry, *args, **kwargs)
+            if _is_empty_result(res):
+                _FAIL_MEMO[key] = (retry, now_win)
+            else:
+                _FAIL_MEMO.pop(key, None)
+            return res
+
+        wrapper.clear = _cached.clear         # type: ignore[attr-defined]
+        wrapper.__wrapped_cache__ = _cached   # type: ignore[attr-defined]
+        return wrapper
+    return decorator
 # 계정과목 키워드 매핑
 ACC: dict[str, list[str]] = {
     "assets":      ["자산총계"],
@@ -377,7 +453,7 @@ def _dart_get(path: str, params: dict, timeout: tuple = (10, 60)) -> requests.Re
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
 
-@st.cache_data(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
+@st.cache_resource(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
 def load_corp_list() -> list[dict]:
     r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY})
     r.raise_for_status()
@@ -391,20 +467,53 @@ def load_corp_list() -> list[dict]:
         name  = (item.findtext("corp_name")  or "").strip()
         stock = (item.findtext("stock_code") or "").strip()
         if code and name:
-            corps.append({"corp_code": code, "corp_name": name, "stock_code": stock})
+            corps.append({"corp_code": code, "corp_name": name, "stock_code": stock,
+                          "_lname": name.lower()})
     return corps
-def search_corps(query: str, all_corps: list[dict]) -> list[dict]:
+
+
+@st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
+def _corp_index() -> dict:
+    """검색용 인덱스 — 매 rerun 마다 10만 건을 재순회하지 않도록 1회만 구성."""
+    corps = load_corp_list()
+    by_stock: dict[str, list[dict]] = {}
+    by_name:  dict[str, list[dict]] = {}
+    for c in corps:
+        if c["stock_code"]:
+            by_stock.setdefault(c["stock_code"], []).append(c)
+        by_name.setdefault(c["_lname"], []).append(c)
+    return {"all": corps, "by_stock": by_stock, "by_name": by_name}
+
+
+def search_corps(query: str, all_corps: list[dict] | None = None) -> list[dict]:
     q  = query.strip()
     ql = q.lower()
+    if not q:
+        return []
+    idx = _corp_index()
+    corps = all_corps if all_corps is not None else idx["all"]
+    use_idx = all_corps is None
     if q.isdigit() or (len(q) >= 2 and q[0].upper() == "A" and q[1:].isdigit()):
         stock_q = q.lstrip("Aa")
-        matches = [c for c in all_corps if c["stock_code"] in (stock_q, q)]
+        if use_idx:
+            matches = idx["by_stock"].get(stock_q, []) + idx["by_stock"].get(q, [])
+        else:
+            matches = [c for c in corps if c["stock_code"] in (stock_q, q)]
     else:
-        exact   = [c for c in all_corps if c["corp_name"].lower() == ql]
-        partial = [c for c in all_corps if ql in c["corp_name"].lower()]
-        matches = exact if exact else partial
+        if use_idx:
+            exact = idx["by_name"].get(ql, [])
+        else:
+            exact = [c for c in corps if c["corp_name"].lower() == ql]
+        if exact:
+            matches = list(exact)
+        else:
+            matches = [c for c in corps if ql in c.get("_lname", c["corp_name"].lower())]
+    # 중복 제거 (corp_code 기준) — 인덱스 병합·동명 법인 대응
+    seen: set[str] = set()
+    matches = [c for c in matches if not (c["corp_code"] in seen or seen.add(c["corp_code"]))]
     if not matches:
         return []
+    matches = list(matches)
     matches.sort(key=lambda c: (
         c["corp_name"].lower() != ql,                                     # 정확히 일치 먼저
         not bool(c["stock_code"]),                                        # 상장 기업 먼저
@@ -415,14 +524,15 @@ def search_corps(query: str, all_corps: list[dict]) -> list[dict]:
 # ══════════════════════════════════════════
 #  DART API — 재무 데이터
 # ══════════════════════════════════════════
-@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
+@versioned_cache(TTL_MEDIUM)
 def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
     try:
-        r = requests.get(
-            f"{BASE}/fnlttSinglAcntAll.json",
-            params={"crtfc_key": DART_KEY, "corp_code": corp_code,
-                    "bsns_year": year, "reprt_code": "11011", "fs_div": fs_div},
-            timeout=15,
+        # _dart_get 사용 — Streamlit Cloud 등에서 SSL 검증 실패 시 자동 재시도
+        r = _dart_get(
+            "fnlttSinglAcntAll.json",
+            {"crtfc_key": DART_KEY, "corp_code": corp_code,
+             "bsns_year": year, "reprt_code": "11011", "fs_div": fs_div},
+            timeout=(10, 20),
         )
         d = r.json()
         if d.get("status") != "000" or not d.get("list"):
@@ -483,16 +593,20 @@ def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
             if not k.startswith("_")
         )
         return result if has_data else None
-    except Exception:
+    except Exception as e:
+        _log_err(f"fetch_year:{corp_code}:{year}:{fs_div}", e)
         return None
-@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
-def fetch_all_years(corp_code: str, fs_div: str, _ver: int = _CACHE_VER) -> dict:
+@versioned_cache(TTL_MEDIUM)
+def fetch_all_years(corp_code: str, fs_div: str) -> dict:
     """연도별 재무데이터를 ThreadPoolExecutor로 병렬 조회 (순차 대비 최대 5× 빠름)."""
     all_data: dict[str, dict] = {}
+    _ctx = get_script_run_ctx()
     def _fetch(year: int) -> tuple[int, dict | None]:
         return year, fetch_year(corp_code, year, fs_div)
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(_fetch, year): year for year in YEARS}
+        for _t in getattr(executor, "_threads", ()):   # 캐시 접근용 컨텍스트 전파
+            add_script_run_ctx(_t, _ctx)
         for future in as_completed(futures):
             year, data = future.result()
             if data:
@@ -503,7 +617,7 @@ def fetch_all_years(corp_code: str, fs_div: str, _ver: int = _CACHE_VER) -> dict
 # ══════════════════════════════════════════
 #  DART API — 기업 개요
 # ══════════════════════════════════════════
-@st.cache_data(ttl=TTL_LONG, show_spinner=False)
+@versioned_cache(TTL_LONG)
 def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
     result = {}
     try:
@@ -537,7 +651,7 @@ def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
 # ══════════════════════════════════════════
 #  시장 데이터 (환율 + 미국채)
 # ══════════════════════════════════════════
-@st.cache_data(ttl=60, show_spinner=False)   # 60초 캐시 — rate limit 방지
+@versioned_cache(300, fail_ttl=60)   # 5분 캐시 (실패 시 60초 후 재시도)
 def fetch_market_data() -> dict:
     if not _YF_AVAILABLE:
         return {}
@@ -602,7 +716,7 @@ def _parse_disc_list(items: list[dict], count: int) -> list[dict]:
             "link":      link,
         })
     return result
-@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
+@versioned_cache(TTL_SHORT)
 def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]:
     end_de = datetime.now().strftime("%Y%m%d")
     bgn_de = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
@@ -632,7 +746,7 @@ def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]
 # ══════════════════════════════════════════
 #  뉴스
 # ══════════════════════════════════════════
-@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
+@versioned_cache(TTL_SHORT)
 def fetch_news(company_name: str, count: int = 15) -> list[dict]:
     try:
         query = urllib.parse.quote(company_name)
@@ -664,8 +778,8 @@ _REPRT_CANDIDATES = (
     [(y, "11011") for y in range(datetime.now().year - 1, datetime.now().year - 6, -1)] +
     [(y, "11012") for y in range(datetime.now().year - 1, datetime.now().year - 4, -1)]
 )
-@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
-def fetch_major_shareholders(corp_code: str, _ver: int = _CACHE_VER) -> list[dict]:
+@versioned_cache(TTL_MEDIUM)
+def fetch_major_shareholders(corp_code: str) -> list[dict]:
     if not corp_code:
         return []
     for bsns_year, reprt_code in _REPRT_CANDIDATES:
@@ -708,8 +822,8 @@ def fetch_major_shareholders(corp_code: str, _ver: int = _CACHE_VER) -> list[dic
         except Exception:
             continue
     return []
-@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
-def fetch_major_shareholder_history(corp_code: str, _ver: int = _CACHE_VER) -> list[dict]:
+@versioned_cache(TTL_MEDIUM)
+def fetch_major_shareholder_history(corp_code: str) -> list[dict]:
     if not corp_code:
         return []
     for bsns_year, reprt_code in _REPRT_CANDIDATES:
@@ -812,8 +926,8 @@ def _safe_float(v: str) -> float | None:
         return float(v or 0) or None
     except (ValueError, TypeError):
         return None
-@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
-def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CACHE_VER) -> list[dict]:
+@versioned_cache(TTL_SHORT)
+def fetch_large_holding_reports(corp_code: str, count: int = 20) -> list[dict]:
     if not DART_KEY or not corp_code:
         return []
     try:
@@ -841,8 +955,8 @@ def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CA
         return rows
     except Exception:
         return []
-@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
-def fetch_executive_stock_reports(corp_code: str, count: int = 30, _ver: int = _CACHE_VER) -> list[dict]:
+@versioned_cache(TTL_SHORT)
+def fetch_executive_stock_reports(corp_code: str, count: int = 30) -> list[dict]:
     if not DART_KEY or not corp_code:
         return []
     try:
@@ -907,8 +1021,8 @@ def _emp_pick_agg(items: list[dict], sex: str) -> dict | None:
         return None
     agg = [x for x in rows if "합계" in (x.get("fo_bbm") or "")]
     return agg[0] if agg else max(rows, key=lambda x: _emp_parse_int(x.get("sm")))
-@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
-def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
+@versioned_cache(TTL_MEDIUM)
+def fetch_employee_status(corp_code: str) -> dict:
     if not DART_KEY:
         return {}
 
@@ -945,7 +1059,10 @@ def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
 
     result: dict[str, dict] = {}
     fetch_years = list(range(2015, datetime.now().year))
+    _ctx = get_script_run_ctx()
     with ThreadPoolExecutor(max_workers=5) as executor:
+        for _t in getattr(executor, "_threads", ()):
+            add_script_run_ctx(_t, _ctx)
         for year, rec in executor.map(_fetch_emp_year, fetch_years):
             if rec:
                 result[str(year)] = rec
@@ -953,6 +1070,7 @@ def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
 # ══════════════════════════════════════════
 #  주가 데이터 (yfinance)
 # ══════════════════════════════════════════
+@versioned_cache(TTL_LONG, fail_ttl=300)
 def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
     """corp_cls 에 맞는 거래소 접미사를 시도하고, 데이터가 없으면 반대 거래소도 시도.
     DART가 corp_cls='E'(기타)로 잘못 분류한 KOSPI/KOSDAQ 종목에 대응.
@@ -969,9 +1087,9 @@ def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
         except Exception:
             continue
     return None
-@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
+@versioned_cache(TTL_SHORT)
 def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
-                      timeframe: str = "6mo", _ver: int = _CACHE_VER) -> list[dict]:
+                      timeframe: str = "6mo") -> list[dict]:
     if not _YF_AVAILABLE or not stock_code:
         return []
     try:
@@ -1036,9 +1154,9 @@ def _yf_retry(fn, retries: int = 3, delay: float = 2.0):
                 raise
     return None
 
-@st.cache_data(ttl=TTL_LONG, show_spinner=False)
+@versioned_cache(TTL_LONG)
 def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
-                         corp_code: str = "", _ver: int = _CACHE_VER) -> dict:
+                         corp_code: str = "") -> dict:
     if not _YF_AVAILABLE or not stock_code:
         return {"__error__": "yfinance 없음"}
     try:
@@ -1230,7 +1348,7 @@ def kpi_card(label: str, cur, prev, is_pct: bool = False, invert: bool = False) 
 #  주식 탭 — 서브 렌더러
 # ══════════════════════════════════════════
 def _render_mktcap_chart(stock_code: str, corp_cls: str, corp_code: str) -> dict:
-    yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_CACHE_VER)
+    yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code)
     with st.container(border=True):
         _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
         if "__error__" in yf_data:
@@ -1460,7 +1578,7 @@ def _render_shareholder_section(corp_code: str) -> None:
 def _render_large_holdings(corp_code: str) -> None:
     """대량보유상황보고 테이블 렌더링."""
     with st.spinner("대량보유상황보고 조회 중..."):
-        large_holdings = fetch_large_holding_reports(corp_code, count=15, _ver=_CACHE_VER)
+        large_holdings = fetch_large_holding_reports(corp_code, count=15)
     _section_header("대량보유상황보고")
     if not large_holdings:
         st.caption("대량보유상황보고 데이터를 찾을 수 없습니다.")
@@ -1508,7 +1626,7 @@ def _render_large_holdings(corp_code: str) -> None:
 def _render_executive_reports(corp_code: str) -> None:
     """임원·주요주주 소유보고 테이블 렌더링."""
     with st.spinner("임원·주요주주 소유보고 조회 중..."):
-        exec_reports = fetch_executive_stock_reports(corp_code, count=15, _ver=_CACHE_VER)
+        exec_reports = fetch_executive_stock_reports(corp_code, count=15)
     _section_header("임원·주요주주 소유보고")
     if not exec_reports:
         st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
@@ -1563,9 +1681,9 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
     if not mktcap or not corp_code:
         return
 
-    fin: dict[str, dict] = fetch_all_years(corp_code, "CFS", _ver=_CACHE_VER)
+    fin: dict[str, dict] = fetch_all_years(corp_code, "CFS")
     if not fin:
-        fin = fetch_all_years(corp_code, "OFS", _ver=_CACHE_VER)
+        fin = fetch_all_years(corp_code, "OFS")
     if not fin:
         return
 
@@ -1823,7 +1941,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
     }
     is_daily = sel in ("6달", "2년", "3년")
     with st.spinner("주가 데이터 조회 중..."):
-        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=_CACHE_VER)
+        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel])
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
@@ -1918,40 +2036,25 @@ def render_stock_chart(stock_code: str, corp_name: str,
 #  재무제표 탭
 # ══════════════════════════════════════════
 def _render_fs_tab(corp: dict) -> None:
-    cache_key = f"{corp['corp_code']}_data"
-    need_fetch = (
-        cache_key not in st.session_state
-        or st.session_state.get(cache_key + "_corp")  != corp["corp_code"]
-        or st.session_state.get(cache_key + "_ver")   != _CACHE_VER
-        or st.session_state.get(cache_key + "_years") != (YEARS[0], YEARS[-1])
-    )
-    if need_fetch:
-        with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
-            cfs = fetch_all_years(corp["corp_code"], "CFS")
-            ofs = fetch_all_years(corp["corp_code"], "OFS")
-            if cfs and ofs:
-                # CFS 우선, CFS에 없는 연도는 OFS로 보완 (금융지주·은행 등 CFS 이력이 짧은 경우 대응)
-                data   = {**ofs, **cfs}
-                fs_div = "CFS+OFS"
-            elif cfs:
-                data   = cfs
-                fs_div = "CFS"
-            elif ofs:
-                data   = ofs
-                fs_div = "OFS"
-            else:
-                data   = {}
-                fs_div = "-"
-        st.session_state[cache_key]            = data
-        st.session_state[cache_key + "_fs"]    = fs_div
-        st.session_state[cache_key + "_corp"]  = corp["corp_code"]
-        st.session_state[cache_key + "_ver"]   = _CACHE_VER
-        st.session_state[cache_key + "_years"] = (YEARS[0], YEARS[-1])
+    # session_state 수동 캐시 제거 — fetch_all_years 가 이미 캐시되어 있고,
+    # session_state 사본은 TTL이 없어 실패/구버전 데이터가 영구히 남는 원인이었음
+    with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
+        cfs = fetch_all_years(corp["corp_code"], "CFS")
+        ofs = fetch_all_years(corp["corp_code"], "OFS")
+    if cfs and ofs:
+        # CFS 우선, CFS에 없는 연도는 OFS로 보완 (금융지주·은행 등 CFS 이력이 짧은 경우 대응)
+        data, fs_div = {**ofs, **cfs}, "CFS+OFS"
+    elif cfs:
+        data, fs_div = cfs, "CFS"
+    elif ofs:
+        data, fs_div = ofs, "OFS"
     else:
-        data   = st.session_state[cache_key]
-        fs_div = st.session_state.get(cache_key + "_fs", "CFS")
+        data, fs_div = {}, "-"
     if not data:
-        st.error("재무데이터를 불러올 수 없습니다.")
+        st.error("재무데이터를 불러올 수 없습니다. (DART 응답 없음 — 잠시 후 자동 재시도됩니다)")
+        if _LAST_ERRORS:
+            with st.expander("진단 로그"):
+                st.code("\n".join(_LAST_ERRORS[-10:]))
         return
 
     years    = sorted(data.keys())
@@ -2134,7 +2237,7 @@ def _render_news_tab(corp: dict) -> None:
 # ══════════════════════════════════════════
 def _render_employee_tab(corp: dict) -> None:
     with st.spinner("직원 현황 조회 중..."):
-        emp_data = fetch_employee_status(corp["corp_code"], _ver=_CACHE_VER)
+        emp_data = fetch_employee_status(corp["corp_code"])
     if not emp_data:
         st.caption("직원 현황 데이터를 찾을 수 없습니다.")
         return
@@ -2222,7 +2325,7 @@ def _render_employee_tab(corp: dict) -> None:
 # ══════════════════════════════════════════
 #  3중 적정주가 산정 (PER · PBR · DCF)
 # ══════════════════════════════════════════
-@st.cache_data(ttl=TTL_LONG, show_spinner=False)
+@versioned_cache(TTL_LONG)
 def compute_fair_values(
     corp_code: str,
     stock_code: str,
@@ -2231,7 +2334,6 @@ def compute_fair_values(
     terminal_g: float = 0.02,
     fcf_growth: float = 0.05,
     proj_years: int   = 5,
-    _ver: int         = _CACHE_VER,
 ) -> dict:
     """
     3중 적정주가 산정 공식 (PER · PBR · DCF)
@@ -2282,7 +2384,7 @@ def compute_fair_values(
         return result
     try:
         # ── 주가·주식수 (캐시된 fetch_yf_annual_data 활용) ──────────
-        yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_ver)
+        yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code)
         if "__error__" in yf_data:
             result["error"] = yf_data["__error__"]
             return result
@@ -2296,8 +2398,8 @@ def compute_fair_values(
             return result
 
         # ── 재무데이터 (fetch_all_years 캐시 활용) ──────────────────
-        cfs = fetch_all_years(corp_code, "CFS", _ver=_ver)
-        ofs = fetch_all_years(corp_code, "OFS", _ver=_ver)
+        cfs = fetch_all_years(corp_code, "CFS")
+        ofs = fetch_all_years(corp_code, "OFS")
         fin_data = {**ofs, **cfs} if (cfs and ofs) else (cfs or ofs or {})
         if not fin_data:
             result["error"] = "재무데이터 없음"
@@ -2556,22 +2658,32 @@ def _render_valuation_card(fv: dict) -> None:
 # ══════════════════════════════════════════
 def _on_search_enter() -> None:
     _run_search(st.session_state.get("_search_input", ""))
-def _run_search(q: str) -> None:
-    """검색 실행 — 가장 일치하는 법인을 session_state에 저장."""
+def _run_search(q: str, force: bool = False) -> None:
+    """검색 실행 — 가장 일치하는 법인을 session_state에 저장.
+
+    중복 실행 방지:
+      ① 같은 rerun 안에서 on_change 콜백과 버튼 클릭이 동시에 발생해도 1회만 수행
+      ② 직전과 동일한 검색어면 재조회하지 않음 (탭 전환·위젯 조작 시 재검색 방지)
+    """
     q = (q or "").strip()
     if not q:
         return
+    if not force:
+        if st.session_state.get("_search_last_q") == q:
+            return
+    st.session_state["_search_last_q"] = q
     try:
-        corps = load_corp_list()
-        results = search_corps(q, corps)
+        results = search_corps(q)
     except requests.exceptions.ConnectionError:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
+        st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
         st.error("DART API 서버에 연결할 수 없습니다. 네트워크 상태를 확인하세요.")
         return
     except requests.exceptions.Timeout:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
+        st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
         st.error("DART API 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.")
         return
     except requests.exceptions.HTTPError as e:
@@ -2586,6 +2698,7 @@ def _run_search(q: str) -> None:
     except Exception as e:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
+        st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
         st.error(f"기업 목록 조회 중 오류 발생: {e}")
         return
     if results:
@@ -2635,6 +2748,7 @@ def main() -> None:
                 label_visibility="collapsed",
             )
         with col_btn:
+            # on_change 콜백이 이미 같은 검색어를 처리했다면 _run_search 내부에서 무시됨
             if st.button("검색", use_container_width=True):
                 _run_search(st.session_state.get("_search_input", ""))
         st.markdown("</div>", unsafe_allow_html=True)
@@ -2660,7 +2774,7 @@ def main() -> None:
             _fv = compute_fair_values(
                 corp["corp_code"], corp.get("stock_code", ""),
                 ov.get("corp_cls_raw", "Y"),
-                _wacc, _tg, _fcfg, _years, _CACHE_VER,
+                _wacc, _tg, _fcfg, _years,
             )
 
     # ── 회사 정보 카드 ────────────────────────────────────────────────────
