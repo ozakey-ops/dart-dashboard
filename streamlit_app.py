@@ -8,11 +8,8 @@
 # ══════════════════════════════════════════
 #  표준 라이브러리 imports
 # ══════════════════════════════════════════
-import functools
 import io
 import os
-import socket
-import ssl
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -62,41 +59,14 @@ def _load_secrets() -> dict:
     return {}
 
 _secrets = _load_secrets()
-_PLACEHOLDERS = ("여기에_DART_API_키_입력", "여기에_KRX_API_키_입력",
-                 "발급받은_DART_API_키", "발급받은_KRX_API_키", "")
-
-
-def get_secret(name: str, default: str = "") -> str:
-    """API 키 조회 우선순위: Streamlit Secrets → secrets.toml → 환경변수.
-
-    Streamlit Cloud 에서는 앱 설정 → Secrets 탭에 아래처럼 등록한다:
-        DART_KEY = "발급받은 DART 오픈API 키"
-        KRX_KEY  = "발급받은 KRX 오픈API 인증키"
-    """
-    val = ""
-    try:                                     # Streamlit Cloud Secrets UI 우선
-        val = str(st.secrets.get(name, "") or "")
-    except Exception:
-        val = ""
-    if not val:
-        val = str(_secrets.get(name, "") or "")
-    if not val:
-        val = os.environ.get(name, "") or ""
-    val = val.strip()
-    return default if val in _PLACEHOLDERS else val
-
-
-DART_KEY: str = get_secret("DART_KEY")
-# KRX 오픈API 인증키 — 별칭(KRX_AUTH_KEY / KRX_API_KEY)도 허용
-KRX_KEY: str = get_secret("KRX_KEY") or get_secret("KRX_AUTH_KEY") or get_secret("KRX_API_KEY")
+_PLACEHOLDER = "여기에_DART_API_키_입력"
+try:                                        # Streamlit Cloud Secrets UI 우선
+    DART_KEY: str = st.secrets.get("DART_KEY", "") or _secrets.get("DART_KEY", "")
+except Exception:
+    DART_KEY = _secrets.get("DART_KEY", "") or os.environ.get("DART_KEY", "")
+if DART_KEY == _PLACEHOLDER:
+    DART_KEY = ""  # 플레이스홀더는 미설정으로 처리
 BASE         = "https://opendart.fss.or.kr/api"
-# KRX Data Marketplace 오픈API (주식 부문)
-KRX_BASE     = "https://data-dbg.krx.co.kr/svc/apis/sto"
-KRX_ENDPOINTS = [           # (엔드포인트, 시장명, DART corp_cls 대응코드)
-    ("stk_isu_base_info", "KOSPI",  "Y"),
-    ("ksq_isu_base_info", "KOSDAQ", "K"),
-    ("knx_isu_base_info", "KONEX",  "N"),
-]
 _LATEST_YEAR = datetime.now().year - 1
 YEARS        = list(range(_LATEST_YEAR - 14, _LATEST_YEAR + 1))
 # 캐시 TTL 상수 (초)
@@ -106,90 +76,7 @@ TTL_MEDIUM    = 3600     # 1시간 — 재무·주가
 TTL_LONG      = 86400    # 1일  — 기업 개요
 TTL_WEEKLY    = 604800   # 7일  — 기업 목록
 # 캐시 버전 — 변경 시 이전 캐시 전체 무효화
-_CACHE_VER = 29
-# 실패 결과 재시도 주기 (초) — 빈 응답을 TTL 내내 캐시하지 않도록 제어
-FAIL_RETRY_TTL = 120
-
-# ══════════════════════════════════════════
-#  캐시 인프라
-# ══════════════════════════════════════════
-# 스레드에서 캐시 함수 호출 시 ScriptRunContext 누락 방지
-try:
-    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-except Exception:                                    # 버전 차이 대비
-    def add_script_run_ctx(thread=None, ctx=None):   # type: ignore
-        return thread
-    def get_script_run_ctx():                        # type: ignore
-        return None
-
-# 최근 실패 기록 {호출키: 실패시각 window} — 프로세스 전역
-_FAIL_MEMO: dict[str, tuple[int, int]] = {}
-# 디버그용 최근 오류 (UI 하단 진단 패널에서 확인)
-_LAST_ERRORS: list[str] = []
-
-
-def _log_err(where: str, e: Exception) -> None:
-    msg = f"{datetime.now():%H:%M:%S} [{where}] {type(e).__name__}: {e}"
-    _LAST_ERRORS.append(msg)
-    del _LAST_ERRORS[:-30]
-
-
-def _is_empty_result(v) -> bool:
-    """빈 결과(=조회 실패 가능성) 판정 — 실패는 짧게만 캐시한다."""
-    if v is None:
-        return True
-    if isinstance(v, dict):
-        return (not v) or ("__error__" in v) or bool(v.get("error"))
-    if isinstance(v, tuple):                       # fetch_disclosures → (list, label)
-        return len(v) == 0 or _is_empty_result(v[0])
-    if isinstance(v, (list, set, str)):
-        return len(v) == 0
-    return False
-
-
-def versioned_cache(ttl: int, fail_ttl: int = FAIL_RETRY_TTL, spinner=False):
-    """st.cache_data 래퍼.
-
-    ① _ver 를 호출부가 아니라 데코레이터가 자동 주입 →
-       `f(x)` 와 `f(x, _ver=25)` 가 서로 다른 캐시 키로 갈라지는 문제를 원천 차단.
-    ② 빈 결과(실패)는 fail_ttl(기본 120초) 뒤 자동 재시도 → 실패 응답이
-       TTL(최대 1일) 동안 캐시에 박혀 "데이터가 안 나오는" 현상 방지.
-    """
-    def decorator(fn):
-        # ⚠️ 주의 1: 인자명이 "_"로 시작하면 Streamlit이 해시에서 제외한다.
-        #    (원본 코드의 `_ver` 가 캐시 무효화에 전혀 작동하지 않던 이유)
-        #    → ver / retry 는 반드시 밑줄 없는 이름이어야 한다.
-        # ⚠️ 주의 2: Streamlit은 함수 키를 module + qualname + 소스코드 해시로 만든다.
-        #    아래 _cached 는 모든 데코레이션 대상이 동일한 qualname/소스를 갖기 때문에
-        #    함수 키가 전부 같아진다. 따라서 fname 을 "해시되는 인자"로 넘겨
-        #    함수별 네임스페이스를 분리해야 한다.
-        #    (누락 시 인자 시그니처가 같은 서로 다른 함수끼리 캐시가 충돌한다.
-        #     예: fetch_major_shareholders(corp_code) ↔ fetch_major_shareholder_history(corp_code))
-        @st.cache_data(ttl=ttl, show_spinner=spinner)
-        def _cached(fname: str, ver: int, retry: int, *args, **kwargs):
-            return fn(*args, **kwargs)
-
-        fn_id = f"{fn.__module__}.{fn.__qualname__}"
-
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            kwargs.pop("_ver", None)          # 레거시 호출부 호환
-            key = f"{fn_id}|{args!r}|{sorted(kwargs.items())!r}"
-            now_win = int(time.time() // fail_ttl)
-            prev_tok, prev_win = _FAIL_MEMO.get(key, (0, None))
-            # 실패했던 호출은 fail_ttl 창이 바뀔 때만 토큰을 갱신해 재시도한다
-            retry = prev_tok if (prev_win is None or prev_win == now_win) else now_win
-            res = _cached(fn_id, _CACHE_VER, retry, *args, **kwargs)
-            if _is_empty_result(res):
-                _FAIL_MEMO[key] = (retry, now_win)
-            else:
-                _FAIL_MEMO.pop(key, None)
-            return res
-
-        wrapper.clear = _cached.clear         # type: ignore[attr-defined]
-        wrapper.__wrapped_cache__ = _cached   # type: ignore[attr-defined]
-        return wrapper
-    return decorator
+_CACHE_VER = 25
 # 계정과목 키워드 매핑
 ACC: dict[str, list[str]] = {
     "assets":      ["자산총계"],
@@ -478,215 +365,22 @@ def _section_header(title: str, sub: str = "") -> None:
 # ══════════════════════════════════════════
 #  DART API — 기업 목록
 # ══════════════════════════════════════════
-# ── DART 전송 계층 ────────────────────────────────────────────
-# Streamlit Cloud(해외 리전) → opendart.fss.or.kr 구간에서 자주 발생하는
-# ① IPv6 경로 블랙홀  ② TLS legacy renegotiation 거부  ③ 인증서 체인 검증 실패
-# 세 가지를 순차적으로 우회한다.
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# ① IPv6 우회 — 국내 공공 서버는 IPv6 경로에서 연결이 끊기는 사례가 많다
-try:
-    import urllib3.util.connection as _u3conn
-    _u3conn.allowed_gai_family = lambda: socket.AF_INET      # IPv4 강제
-except Exception:
-    pass
-
-_UA = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
-_OP_LEGACY_SERVER_CONNECT = 0x4      # ssl.OP_LEGACY_SERVER_CONNECT (Py3.12+ 상수 부재 대비)
-
-
-class _DartTLSAdapter(requests.adapters.HTTPAdapter):
-    """구형 TLS 재협상을 허용하는 어댑터 (OpenSSL 3.x + 국내 공공 서버 조합 대응)."""
-
-    def __init__(self, verify: bool = True, **kw):
-        self._verify_peer = verify
-        super().__init__(**kw)
-
-    def _ctx(self) -> ssl.SSLContext:
-        ctx = ssl.create_default_context()
-        ctx.options |= _OP_LEGACY_SERVER_CONNECT
-        try:
-            ctx.set_ciphers("DEFAULT@SECLEVEL=1")
-        except ssl.SSLError:
-            pass
-        if not self._verify_peer:
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        return ctx
-
-    def init_poolmanager(self, *a, **kw):
-        kw["ssl_context"] = self._ctx()
-        return super().init_poolmanager(*a, **kw)
-
-    def proxy_manager_for(self, *a, **kw):
-        kw["ssl_context"] = self._ctx()
-        return super().proxy_manager_for(*a, **kw)
-
-
-@st.cache_resource(show_spinner=False)
-def _dart_sessions() -> list[tuple[str, requests.Session]]:
-    """(라벨, 세션) 목록 — 앞에서부터 순서대로 시도한다."""
-    from urllib3.util.retry import Retry
-    out: list[tuple[str, requests.Session]] = []
-    specs = [
-        ("standard",   None,  True),    # 기본 TLS + 인증서 검증
-        ("legacy-tls", True,  True),    # legacy renegotiation 허용
-        ("no-verify",  True,  False),   # 인증서 검증 생략 (최후 수단)
-    ]
-    for label, use_adapter, verify in specs:
-        sess = requests.Session()
-        sess.headers.update(_UA)
-        sess.verify = verify
-        retry = Retry(total=2, connect=2, read=1, backoff_factor=0.8,
-                      status_forcelist=(429, 500, 502, 503, 504),
-                      allowed_methods=frozenset(["GET"]))
-        adapter = (_DartTLSAdapter(verify=verify, max_retries=retry)
-                   if use_adapter else requests.adapters.HTTPAdapter(max_retries=retry))
-        sess.mount("https://", adapter)
-        sess.mount("http://", requests.adapters.HTTPAdapter(max_retries=retry))
-        out.append((label, sess))
-    return out
-
-
-# 직전에 성공한 세션을 기억해 매 요청마다 실패 경로를 재시도하지 않는다
-_DART_OK_SESSION: dict[str, int] = {"idx": 0}
-
-
-def _dart_get(path: str, params: dict, timeout: tuple = (15, 90)) -> requests.Response:
-    """DART API GET 래퍼 — 전송 방식을 단계적으로 낮춰가며 재시도."""
+def _dart_get(path: str, params: dict, timeout: tuple = (10, 60)) -> requests.Response:
+    """DART API GET 래퍼 — SSL/연결 오류 시 verify=False 재시도."""
     url = f"{BASE}/{path}"
-    sessions = _dart_sessions()
-    order = list(range(len(sessions)))
-    start = _DART_OK_SESSION["idx"]
-    order = order[start:] + order[:start]          # 성공했던 방식부터
-    last_exc: Exception | None = None
-    for i in order:
-        label, sess = sessions[i]
-        try:
-            r = sess.get(url, params=params, timeout=timeout)
-            _DART_OK_SESSION["idx"] = i
-            return r
-        except (requests.exceptions.SSLError,
-                requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout) as e:
-            last_exc = e
-            _log_err(f"_dart_get[{label}]:{path}", e)
-            continue
-    raise last_exc if last_exc else RuntimeError("DART 요청 실패")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=True)
+    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
+        # Streamlit Cloud 등 해외 서버에서 한국 정부 인증서 검증 실패 시 재시도
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
 
-
-def dart_connection_error_detail() -> str:
-    """마지막 연결 실패 원인 요약 (UI 진단용)."""
-    for msg in reversed(_LAST_ERRORS):
-        if "_dart_get" in msg:
-            return msg
-    return ""
-
-# ══════════════════════════════════════════
-#  KRX 오픈API — 상장종목 목록 (1차 소스)
-# ══════════════════════════════════════════
-# 최근 조회 메타 (UI 표시용)
-_KRX_META: dict[str, object] = {"bas_dd": "", "count": 0, "source": ""}
-
-
-def _krx_get(endpoint: str, params: dict, timeout: tuple = (15, 60)) -> dict:
-    """KRX 오픈API 호출 — 인증키는 AUTH_KEY 헤더로 전달.
-
-    GET 우선, 405/400 응답 시 POST(JSON)로 재시도한다.
-    """
-    if not KRX_KEY:
-        raise RuntimeError("KRX_KEY 미설정")
-    url = f"{KRX_BASE}/{endpoint}"
-    headers = {"AUTH_KEY": KRX_KEY, "Accept": "application/json"}
-    _, sess = _dart_sessions()[_DART_OK_SESSION["idx"]]      # 재시도·TLS 폴백 재사용
-    r = sess.get(url, params=params, headers=headers, timeout=timeout)
-    if r.status_code in (400, 404, 405, 415):
-        r = sess.post(url, json=params,
-                      headers={**headers, "Content-Type": "application/json"},
-                      timeout=timeout)
-    if r.status_code == 401:
-        raise RuntimeError("KRX 인증 실패(401) — 인증키가 틀렸거나 해당 API 이용신청이 "
-                           "'승인대기' 상태입니다. KRX 마이페이지 → 이용현황을 확인하세요.")
+@st.cache_data(ttl=TTL_WEEKLY, show_spinner="기업 목록 로딩 중... (최초 1회, 약 10~20초)")
+def load_corp_list() -> list[dict]:
+    r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY})
     r.raise_for_status()
-    return r.json()
-
-
-def _krx_recent_bas_dd(max_back: int = 10) -> list[str]:
-    """조회 기준일 후보 — 휴장일·미갱신(전일분은 익일 오전 반영) 대응."""
-    today = datetime.now()
-    out = []
-    for d in range(1, max_back + 1):
-        day = today - timedelta(days=d)
-        if day.weekday() < 5:                                # 주말 제외
-            out.append(day.strftime("%Y%m%d"))
-    return out
-
-
-@st.cache_resource(ttl=TTL_WEEKLY, show_spinner="KRX 상장종목 목록 로딩 중...")
-def load_krx_corp_list() -> list[dict]:
-    """KRX 종목기본정보(KOSPI·KOSDAQ·KONEX)에서 상장사 목록을 구성."""
-    corps: list[dict] = []
-    used_dd = ""
-    failed_markets: list[str] = []
-    for bas_dd in _krx_recent_bas_dd():
-        rows_total = 0
-        tmp: list[dict] = []
-        failed_markets = []
-        for endpoint, market, cls_code in KRX_ENDPOINTS:
-            try:
-                data = _krx_get(endpoint, {"basDd": bas_dd})
-            except Exception as e:
-                _log_err(f"_krx_get:{endpoint}:{bas_dd}", e)
-                failed_markets.append(market)
-                continue
-            rows = data.get("OutBlock_1") or data.get("outBlock_1") or []
-            rows_total += len(rows)
-            for it in rows:
-                short = (it.get("ISU_SRT_CD") or "").strip()
-                name  = (it.get("ISU_ABBRV") or it.get("ISU_NM") or "").strip()
-                if not short or not name:
-                    continue
-                tmp.append({
-                    "corp_code":  "",                        # DART 코드는 이후 매핑
-                    "corp_name":  name,
-                    "stock_code": short,
-                    "_lname":     name.lower(),
-                    "market":     market,
-                    "corp_cls":   cls_code,
-                    "isin":       (it.get("ISU_CD") or "").strip(),
-                    "full_name":  (it.get("ISU_NM") or "").strip(),
-                    "list_dd":    (it.get("LIST_DD") or "").strip(),
-                    "sect":       (it.get("SECT_TP_NM") or "").strip(),
-                })
-        if rows_total:
-            corps, used_dd = tmp, bas_dd
-            break
-    if not corps:
-        raise RuntimeError("KRX 상장종목 목록을 가져오지 못했습니다 "
-                           "(인증키·API 이용신청 승인 상태를 확인하세요).")
-    # 종목코드 중복 제거 (우선주 등 동일 단축코드는 없으나 방어)
-    seen: set[str] = set()
-    corps = [c for c in corps if not (c["stock_code"] in seen or seen.add(c["stock_code"]))]
-    _KRX_META["bas_dd"]  = used_dd
-    _KRX_META["count"]   = len(corps)
-    _KRX_META["partial"] = ", ".join(failed_markets)   # 일부 시장만 실패한 경우
-    return corps
-
-
-# ══════════════════════════════════════════
-#  DART corpCode.xml — corp_code 매핑 전용 (지연 로딩)
-# ══════════════════════════════════════════
-@st.cache_resource(ttl=TTL_WEEKLY, show_spinner="DART 기업코드 매핑 로딩 중... (최초 1회)")
-def load_dart_corp_records() -> list[dict]:
-    """DART corpCode.xml — DART 계열 API가 요구하는 8자리 corp_code 원본."""
-    # corpCode.xml 은 20MB급 ZIP — 연결/읽기 타임아웃을 넉넉히 준다
-    r = _dart_get("corpCode.xml", {"crtfc_key": DART_KEY}, timeout=(20, 180))
-    r.raise_for_status()
-    if not r.content[:2] == b"PK":
-        # ZIP이 아니면 대개 JSON 형태의 오류 응답 (키 오류·사용한도 초과 등)
-        raise RuntimeError(f"DART 응답이 ZIP이 아님: {r.text[:200]}")
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         with z.open("CORPCODE.xml") as f:
             xml_content = f.read().decode("utf-8")
@@ -697,123 +391,38 @@ def load_dart_corp_records() -> list[dict]:
         name  = (item.findtext("corp_name")  or "").strip()
         stock = (item.findtext("stock_code") or "").strip()
         if code and name:
-            corps.append({"corp_code": code, "corp_name": name, "stock_code": stock,
-                          "_lname": name.lower()})
+            corps.append({"corp_code": code, "corp_name": name, "stock_code": stock})
     return corps
-
-
-
-@st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
-def dart_code_map() -> dict:
-    """{종목코드→corp_code}, {회사명(소문자)→corp_code} 매핑."""
-    recs = load_dart_corp_records()
-    by_stock, by_name = {}, {}
-    for c in recs:
-        if c["stock_code"]:
-            by_stock.setdefault(c["stock_code"], c["corp_code"])
-        by_name.setdefault(c["_lname"], c["corp_code"])
-    return {"by_stock": by_stock, "by_name": by_name}
-
-
-def attach_corp_code(corp: dict) -> dict:
-    """선택된 종목에 DART corp_code 를 주입 (없으면 corp_code="" 유지)."""
-    if corp.get("corp_code"):
-        return corp
-    try:
-        m = dart_code_map()
-    except Exception as e:
-        _log_err("dart_code_map", e)
-        return corp
-    code = m["by_stock"].get(corp.get("stock_code", "")) or m["by_name"].get(corp.get("_lname", ""))
-    if code:
-        corp = {**corp, "corp_code": code}
-    return corp
-
-
-def corp_list_source() -> str:
-    """현재 사용 중인 기업목록 소스 라벨."""
-    return st.session_state.get("_corp_src", "")
-
-
-@st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
-def load_corp_list() -> list[dict]:
-    """기업 목록 — KRX 우선, 실패 시 DART corpCode.xml 로 폴백."""
-    if KRX_KEY:
-        try:
-            corps = load_krx_corp_list()
-            _KRX_META["source"] = "KRX"
-            return corps
-        except Exception as e:
-            _log_err("load_krx_corp_list", e)
-            load_krx_corp_list.clear()
-    _KRX_META["source"] = "DART"
-    return load_dart_corp_records()
-
-
-@st.cache_resource(ttl=TTL_WEEKLY, show_spinner=False)
-def _corp_index() -> dict:
-    """검색용 인덱스 — 매 rerun 마다 전체 목록을 재순회하지 않도록 1회만 구성."""
-    corps = load_corp_list()
-    by_stock: dict[str, list[dict]] = {}
-    by_name:  dict[str, list[dict]] = {}
-    for c in corps:
-        if c["stock_code"]:
-            by_stock.setdefault(c["stock_code"], []).append(c)
-        by_name.setdefault(c["_lname"], []).append(c)
-    return {"all": corps, "by_stock": by_stock, "by_name": by_name}
-
-
-def search_corps(query: str, all_corps: list[dict] | None = None) -> list[dict]:
+def search_corps(query: str, all_corps: list[dict]) -> list[dict]:
     q  = query.strip()
     ql = q.lower()
-    if not q:
-        return []
-    idx = _corp_index()
-    corps = all_corps if all_corps is not None else idx["all"]
-    use_idx = all_corps is None
     if q.isdigit() or (len(q) >= 2 and q[0].upper() == "A" and q[1:].isdigit()):
         stock_q = q.lstrip("Aa")
-        if use_idx:
-            matches = idx["by_stock"].get(stock_q, []) + idx["by_stock"].get(q, [])
-        else:
-            matches = [c for c in corps if c["stock_code"] in (stock_q, q)]
+        matches = [c for c in all_corps if c["stock_code"] in (stock_q, q)]
     else:
-        if use_idx:
-            exact = idx["by_name"].get(ql, [])
-        else:
-            exact = [c for c in corps if c["corp_name"].lower() == ql]
-        if exact:
-            matches = list(exact)
-        else:
-            matches = [c for c in corps if ql in c.get("_lname", c["corp_name"].lower())]
-    # 중복 제거 — KRX 목록은 corp_code 가 비어 있으므로 종목코드+상호로 식별
-    seen: set[str] = set()
-    def _uid(c: dict) -> str:
-        return c.get("corp_code") or f'{c.get("stock_code","")}|{c["corp_name"]}'
-    matches = [c for c in matches if not (_uid(c) in seen or seen.add(_uid(c)))]
+        exact   = [c for c in all_corps if c["corp_name"].lower() == ql]
+        partial = [c for c in all_corps if ql in c["corp_name"].lower()]
+        matches = exact if exact else partial
     if not matches:
         return []
-    matches = list(matches)
     matches.sort(key=lambda c: (
         c["corp_name"].lower() != ql,                                     # 정확히 일치 먼저
-        not c["corp_name"].lower().startswith(ql),                        # 접두 일치 먼저
         not bool(c["stock_code"]),                                        # 상장 기업 먼저
-        len(c["corp_name"]),                                              # 짧은 상호 먼저
+        -(int(c["corp_code"]) if c["corp_code"].isdigit() else 0),        # 최신 등록 법인 먼저
         c["corp_name"],
     ))
     return matches[:20]
 # ══════════════════════════════════════════
 #  DART API — 재무 데이터
 # ══════════════════════════════════════════
-@versioned_cache(TTL_MEDIUM)
+@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
 def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
     try:
-        # _dart_get 사용 — Streamlit Cloud 등에서 SSL 검증 실패 시 자동 재시도
-        r = _dart_get(
-            "fnlttSinglAcntAll.json",
-            {"crtfc_key": DART_KEY, "corp_code": corp_code,
-             "bsns_year": year, "reprt_code": "11011", "fs_div": fs_div},
-            timeout=(10, 20),
+        r = requests.get(
+            f"{BASE}/fnlttSinglAcntAll.json",
+            params={"crtfc_key": DART_KEY, "corp_code": corp_code,
+                    "bsns_year": year, "reprt_code": "11011", "fs_div": fs_div},
+            timeout=15,
         )
         d = r.json()
         if d.get("status") != "000" or not d.get("list"):
@@ -874,20 +483,16 @@ def fetch_year(corp_code: str, year: int, fs_div: str) -> dict | None:
             if not k.startswith("_")
         )
         return result if has_data else None
-    except Exception as e:
-        _log_err(f"fetch_year:{corp_code}:{year}:{fs_div}", e)
+    except Exception:
         return None
-@versioned_cache(TTL_MEDIUM)
-def fetch_all_years(corp_code: str, fs_div: str) -> dict:
+@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
+def fetch_all_years(corp_code: str, fs_div: str, _ver: int = _CACHE_VER) -> dict:
     """연도별 재무데이터를 ThreadPoolExecutor로 병렬 조회 (순차 대비 최대 5× 빠름)."""
     all_data: dict[str, dict] = {}
-    _ctx = get_script_run_ctx()
     def _fetch(year: int) -> tuple[int, dict | None]:
         return year, fetch_year(corp_code, year, fs_div)
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(_fetch, year): year for year in YEARS}
-        for _t in getattr(executor, "_threads", ()):   # 캐시 접근용 컨텍스트 전파
-            add_script_run_ctx(_t, _ctx)
         for future in as_completed(futures):
             year, data = future.result()
             if data:
@@ -898,7 +503,7 @@ def fetch_all_years(corp_code: str, fs_div: str) -> dict:
 # ══════════════════════════════════════════
 #  DART API — 기업 개요
 # ══════════════════════════════════════════
-@versioned_cache(TTL_LONG)
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
     result = {}
     try:
@@ -932,7 +537,7 @@ def fetch_company_overview(corp_code: str, stock_code: str) -> dict:
 # ══════════════════════════════════════════
 #  시장 데이터 (환율 + 미국채)
 # ══════════════════════════════════════════
-@versioned_cache(300, fail_ttl=60)   # 5분 캐시 (실패 시 60초 후 재시도)
+@st.cache_data(ttl=60, show_spinner=False)   # 60초 캐시 — rate limit 방지
 def fetch_market_data() -> dict:
     if not _YF_AVAILABLE:
         return {}
@@ -997,7 +602,7 @@ def _parse_disc_list(items: list[dict], count: int) -> list[dict]:
             "link":      link,
         })
     return result
-@versioned_cache(TTL_SHORT)
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]:
     end_de = datetime.now().strftime("%Y%m%d")
     bgn_de = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
@@ -1027,7 +632,7 @@ def fetch_disclosures(corp_code: str, count: int = 15) -> tuple[list[dict], str]
 # ══════════════════════════════════════════
 #  뉴스
 # ══════════════════════════════════════════
-@versioned_cache(TTL_SHORT)
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_news(company_name: str, count: int = 15) -> list[dict]:
     try:
         query = urllib.parse.quote(company_name)
@@ -1059,8 +664,8 @@ _REPRT_CANDIDATES = (
     [(y, "11011") for y in range(datetime.now().year - 1, datetime.now().year - 6, -1)] +
     [(y, "11012") for y in range(datetime.now().year - 1, datetime.now().year - 4, -1)]
 )
-@versioned_cache(TTL_MEDIUM)
-def fetch_major_shareholders(corp_code: str) -> list[dict]:
+@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
+def fetch_major_shareholders(corp_code: str, _ver: int = _CACHE_VER) -> list[dict]:
     if not corp_code:
         return []
     for bsns_year, reprt_code in _REPRT_CANDIDATES:
@@ -1103,8 +708,8 @@ def fetch_major_shareholders(corp_code: str) -> list[dict]:
         except Exception:
             continue
     return []
-@versioned_cache(TTL_MEDIUM)
-def fetch_major_shareholder_history(corp_code: str) -> list[dict]:
+@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
+def fetch_major_shareholder_history(corp_code: str, _ver: int = _CACHE_VER) -> list[dict]:
     if not corp_code:
         return []
     for bsns_year, reprt_code in _REPRT_CANDIDATES:
@@ -1207,8 +812,8 @@ def _safe_float(v: str) -> float | None:
         return float(v or 0) or None
     except (ValueError, TypeError):
         return None
-@versioned_cache(TTL_SHORT)
-def fetch_large_holding_reports(corp_code: str, count: int = 20) -> list[dict]:
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
+def fetch_large_holding_reports(corp_code: str, count: int = 20, _ver: int = _CACHE_VER) -> list[dict]:
     if not DART_KEY or not corp_code:
         return []
     try:
@@ -1236,8 +841,8 @@ def fetch_large_holding_reports(corp_code: str, count: int = 20) -> list[dict]:
         return rows
     except Exception:
         return []
-@versioned_cache(TTL_SHORT)
-def fetch_executive_stock_reports(corp_code: str, count: int = 30) -> list[dict]:
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
+def fetch_executive_stock_reports(corp_code: str, count: int = 30, _ver: int = _CACHE_VER) -> list[dict]:
     if not DART_KEY or not corp_code:
         return []
     try:
@@ -1302,8 +907,8 @@ def _emp_pick_agg(items: list[dict], sex: str) -> dict | None:
         return None
     agg = [x for x in rows if "합계" in (x.get("fo_bbm") or "")]
     return agg[0] if agg else max(rows, key=lambda x: _emp_parse_int(x.get("sm")))
-@versioned_cache(TTL_MEDIUM)
-def fetch_employee_status(corp_code: str) -> dict:
+@st.cache_data(ttl=TTL_MEDIUM, show_spinner=False)
+def fetch_employee_status(corp_code: str, _ver: int = _CACHE_VER) -> dict:
     if not DART_KEY:
         return {}
 
@@ -1340,10 +945,7 @@ def fetch_employee_status(corp_code: str) -> dict:
 
     result: dict[str, dict] = {}
     fetch_years = list(range(2015, datetime.now().year))
-    _ctx = get_script_run_ctx()
     with ThreadPoolExecutor(max_workers=5) as executor:
-        for _t in getattr(executor, "_threads", ()):
-            add_script_run_ctx(_t, _ctx)
         for year, rec in executor.map(_fetch_emp_year, fetch_years):
             if rec:
                 result[str(year)] = rec
@@ -1351,7 +953,6 @@ def fetch_employee_status(corp_code: str) -> dict:
 # ══════════════════════════════════════════
 #  주가 데이터 (yfinance)
 # ══════════════════════════════════════════
-@versioned_cache(TTL_LONG, fail_ttl=300)
 def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
     """corp_cls 에 맞는 거래소 접미사를 시도하고, 데이터가 없으면 반대 거래소도 시도.
     DART가 corp_cls='E'(기타)로 잘못 분류한 KOSPI/KOSDAQ 종목에 대응.
@@ -1368,9 +969,9 @@ def _resolve_ticker(stock_code: str, corp_cls: str) -> tuple[str, str] | None:
         except Exception:
             continue
     return None
-@versioned_cache(TTL_SHORT)
+@st.cache_data(ttl=TTL_SHORT, show_spinner=False)
 def fetch_stock_chart(stock_code: str, corp_cls: str = "Y",
-                      timeframe: str = "6mo") -> list[dict]:
+                      timeframe: str = "6mo", _ver: int = _CACHE_VER) -> list[dict]:
     if not _YF_AVAILABLE or not stock_code:
         return []
     try:
@@ -1435,9 +1036,9 @@ def _yf_retry(fn, retries: int = 3, delay: float = 2.0):
                 raise
     return None
 
-@versioned_cache(TTL_LONG)
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def fetch_yf_annual_data(stock_code: str, corp_cls: str = "Y",
-                         corp_code: str = "") -> dict:
+                         corp_code: str = "", _ver: int = _CACHE_VER) -> dict:
     if not _YF_AVAILABLE or not stock_code:
         return {"__error__": "yfinance 없음"}
     try:
@@ -1629,7 +1230,7 @@ def kpi_card(label: str, cur, prev, is_pct: bool = False, invert: bool = False) 
 #  주식 탭 — 서브 렌더러
 # ══════════════════════════════════════════
 def _render_mktcap_chart(stock_code: str, corp_cls: str, corp_code: str) -> dict:
-    yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code)
+    yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_CACHE_VER)
     with st.container(border=True):
         _section_header("연도별 시가총액", "과거: 연말 종가 기준 · 현재 연도: 당일 현재가 기준 (억 원)")
         if "__error__" in yf_data:
@@ -1800,8 +1401,8 @@ def _render_shareholder_section(corp_code: str) -> None:
         rows_html = ""
         for i, sh in enumerate(shareholders):
             bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
-            ratio_str  = f"{sh['ratio']:.2f}%" if sh.get("ratio") is not None else "-"
-            shares_str = f"{sh['shares']:,}" if sh.get("shares") else "-"
+            ratio_str  = f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-"
+            shares_str = f"{sh['shares']:,}" if sh["shares"] else "-"
             knd_badge  = (
                 f'<span style="font-size:.62rem;background:#e0f2fe;color:#0369a1;'
                 f'border-radius:4px;padding:1px 5px;margin-left:4px;">{sh["stock_knd"]}</span>'
@@ -1809,7 +1410,7 @@ def _render_shareholder_section(corp_code: str) -> None:
             rows_html += (
                 f'<tr style="background:{bg};">'
                 f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">'
-                f'{sh.get("name", "-")}{knd_badge}</td>'
+                f'{sh["name"]}{knd_badge}</td>'
                 f'<td style="padding:5px 8px;font-size:.75rem;color:#64748b;text-align:center;">{sh["relation"]}</td>'
                 f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;white-space:nowrap;">{shares_str}</td>'
                 f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;white-space:nowrap;">{ratio_str}</td>'
@@ -1836,11 +1437,11 @@ def _render_shareholder_section(corp_code: str) -> None:
         rows_h = ""
         for i, sh in enumerate(sh_history):
             bg         = "#f8fafc" if i % 2 == 0 else "#ffffff"
-            shares_str = f"{sh['shares']:,}" if sh.get("shares") is not None else "-"
-            ratio_str  = f"{sh['ratio']:.2f}%" if sh.get("ratio") is not None else "-"
+            shares_str = f"{sh['shares']:,}" if sh["shares"] is not None else "-"
+            ratio_str  = f"{sh['ratio']:.2f}%" if sh["ratio"] is not None else "-"
             rows_h += (
                 f'<tr style="background:{bg};">'
-                f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh.get("nm", "-")}</td>'
+                f'<td style="padding:5px 8px;font-size:.78rem;color:#1e293b;font-weight:500;">{sh["nm"]}</td>'
                 f'<td style="padding:5px 8px;font-size:.72rem;color:#64748b;text-align:center;white-space:nowrap;">{sh.get("chg_on") or "-"}</td>'
                 f'<td style="padding:5px 8px;font-size:.75rem;color:#1e293b;text-align:right;">{shares_str}</td>'
                 f'<td style="padding:5px 8px;font-size:.78rem;font-weight:600;color:#2563eb;text-align:right;">{ratio_str}</td>'
@@ -1859,7 +1460,7 @@ def _render_shareholder_section(corp_code: str) -> None:
 def _render_large_holdings(corp_code: str) -> None:
     """대량보유상황보고 테이블 렌더링."""
     with st.spinner("대량보유상황보고 조회 중..."):
-        large_holdings = fetch_large_holding_reports(corp_code, count=15)
+        large_holdings = fetch_large_holding_reports(corp_code, count=15, _ver=_CACHE_VER)
     _section_header("대량보유상황보고")
     if not large_holdings:
         st.caption("대량보유상황보고 데이터를 찾을 수 없습니다.")
@@ -1907,7 +1508,7 @@ def _render_large_holdings(corp_code: str) -> None:
 def _render_executive_reports(corp_code: str) -> None:
     """임원·주요주주 소유보고 테이블 렌더링."""
     with st.spinner("임원·주요주주 소유보고 조회 중..."):
-        exec_reports = fetch_executive_stock_reports(corp_code, count=15)
+        exec_reports = fetch_executive_stock_reports(corp_code, count=15, _ver=_CACHE_VER)
     _section_header("임원·주요주주 소유보고")
     if not exec_reports:
         st.caption("임원·주요주주 소유보고 데이터를 찾을 수 없습니다.")
@@ -1962,9 +1563,9 @@ def _render_ev_ebitda_chart(yf_data: dict, corp_code: str) -> None:
     if not mktcap or not corp_code:
         return
 
-    fin: dict[str, dict] = fetch_all_years(corp_code, "CFS")
+    fin: dict[str, dict] = fetch_all_years(corp_code, "CFS", _ver=_CACHE_VER)
     if not fin:
-        fin = fetch_all_years(corp_code, "OFS")
+        fin = fetch_all_years(corp_code, "OFS", _ver=_CACHE_VER)
     if not fin:
         return
 
@@ -2222,7 +1823,7 @@ def render_stock_chart(stock_code: str, corp_name: str,
     }
     is_daily = sel in ("6달", "2년", "3년")
     with st.spinner("주가 데이터 조회 중..."):
-        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel])
+        chart_data = fetch_stock_chart(stock_code, corp_cls, tf_map[sel], _ver=_CACHE_VER)
     if not chart_data:
         st.caption("주가 데이터를 불러올 수 없습니다.")
         return
@@ -2317,25 +1918,40 @@ def render_stock_chart(stock_code: str, corp_name: str,
 #  재무제표 탭
 # ══════════════════════════════════════════
 def _render_fs_tab(corp: dict) -> None:
-    # session_state 수동 캐시 제거 — fetch_all_years 가 이미 캐시되어 있고,
-    # session_state 사본은 TTL이 없어 실패/구버전 데이터가 영구히 남는 원인이었음
-    with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
-        cfs = fetch_all_years(corp["corp_code"], "CFS")
-        ofs = fetch_all_years(corp["corp_code"], "OFS")
-    if cfs and ofs:
-        # CFS 우선, CFS에 없는 연도는 OFS로 보완 (금융지주·은행 등 CFS 이력이 짧은 경우 대응)
-        data, fs_div = {**ofs, **cfs}, "CFS+OFS"
-    elif cfs:
-        data, fs_div = cfs, "CFS"
-    elif ofs:
-        data, fs_div = ofs, "OFS"
+    cache_key = f"{corp['corp_code']}_data"
+    need_fetch = (
+        cache_key not in st.session_state
+        or st.session_state.get(cache_key + "_corp")  != corp["corp_code"]
+        or st.session_state.get(cache_key + "_ver")   != _CACHE_VER
+        or st.session_state.get(cache_key + "_years") != (YEARS[0], YEARS[-1])
+    )
+    if need_fetch:
+        with st.spinner(f"{corp['corp_name']} 재무데이터 수집 중 (K-IFRS 기준 최대 15년)..."):
+            cfs = fetch_all_years(corp["corp_code"], "CFS")
+            ofs = fetch_all_years(corp["corp_code"], "OFS")
+            if cfs and ofs:
+                # CFS 우선, CFS에 없는 연도는 OFS로 보완 (금융지주·은행 등 CFS 이력이 짧은 경우 대응)
+                data   = {**ofs, **cfs}
+                fs_div = "CFS+OFS"
+            elif cfs:
+                data   = cfs
+                fs_div = "CFS"
+            elif ofs:
+                data   = ofs
+                fs_div = "OFS"
+            else:
+                data   = {}
+                fs_div = "-"
+        st.session_state[cache_key]            = data
+        st.session_state[cache_key + "_fs"]    = fs_div
+        st.session_state[cache_key + "_corp"]  = corp["corp_code"]
+        st.session_state[cache_key + "_ver"]   = _CACHE_VER
+        st.session_state[cache_key + "_years"] = (YEARS[0], YEARS[-1])
     else:
-        data, fs_div = {}, "-"
+        data   = st.session_state[cache_key]
+        fs_div = st.session_state.get(cache_key + "_fs", "CFS")
     if not data:
-        st.error("재무데이터를 불러올 수 없습니다. (DART 응답 없음 — 잠시 후 자동 재시도됩니다)")
-        if _LAST_ERRORS:
-            with st.expander("진단 로그"):
-                st.code("\n".join(_LAST_ERRORS[-10:]))
+        st.error("재무데이터를 불러올 수 없습니다.")
         return
 
     years    = sorted(data.keys())
@@ -2518,7 +2134,7 @@ def _render_news_tab(corp: dict) -> None:
 # ══════════════════════════════════════════
 def _render_employee_tab(corp: dict) -> None:
     with st.spinner("직원 현황 조회 중..."):
-        emp_data = fetch_employee_status(corp["corp_code"])
+        emp_data = fetch_employee_status(corp["corp_code"], _ver=_CACHE_VER)
     if not emp_data:
         st.caption("직원 현황 데이터를 찾을 수 없습니다.")
         return
@@ -2606,7 +2222,7 @@ def _render_employee_tab(corp: dict) -> None:
 # ══════════════════════════════════════════
 #  3중 적정주가 산정 (PER · PBR · DCF)
 # ══════════════════════════════════════════
-@versioned_cache(TTL_LONG)
+@st.cache_data(ttl=TTL_LONG, show_spinner=False)
 def compute_fair_values(
     corp_code: str,
     stock_code: str,
@@ -2615,6 +2231,7 @@ def compute_fair_values(
     terminal_g: float = 0.02,
     fcf_growth: float = 0.05,
     proj_years: int   = 5,
+    _ver: int         = _CACHE_VER,
 ) -> dict:
     """
     3중 적정주가 산정 공식 (PER · PBR · DCF)
@@ -2665,7 +2282,7 @@ def compute_fair_values(
         return result
     try:
         # ── 주가·주식수 (캐시된 fetch_yf_annual_data 활용) ──────────
-        yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code)
+        yf_data = fetch_yf_annual_data(stock_code, corp_cls, corp_code, _ver=_ver)
         if "__error__" in yf_data:
             result["error"] = yf_data["__error__"]
             return result
@@ -2679,8 +2296,8 @@ def compute_fair_values(
             return result
 
         # ── 재무데이터 (fetch_all_years 캐시 활용) ──────────────────
-        cfs = fetch_all_years(corp_code, "CFS")
-        ofs = fetch_all_years(corp_code, "OFS")
+        cfs = fetch_all_years(corp_code, "CFS", _ver=_ver)
+        ofs = fetch_all_years(corp_code, "OFS", _ver=_ver)
         fin_data = {**ofs, **cfs} if (cfs and ofs) else (cfs or ofs or {})
         if not fin_data:
             result["error"] = "재무데이터 없음"
@@ -2939,36 +2556,22 @@ def _render_valuation_card(fv: dict) -> None:
 # ══════════════════════════════════════════
 def _on_search_enter() -> None:
     _run_search(st.session_state.get("_search_input", ""))
-def _run_search(q: str, force: bool = False) -> None:
-    """검색 실행 — 가장 일치하는 법인을 session_state에 저장.
-
-    중복 실행 방지:
-      ① 같은 rerun 안에서 on_change 콜백과 버튼 클릭이 동시에 발생해도 1회만 수행
-      ② 직전과 동일한 검색어면 재조회하지 않음 (탭 전환·위젯 조작 시 재검색 방지)
-    """
+def _run_search(q: str) -> None:
+    """검색 실행 — 가장 일치하는 법인을 session_state에 저장."""
     q = (q or "").strip()
     if not q:
         return
-    if not force:
-        if st.session_state.get("_search_last_q") == q:
-            return
-    st.session_state["_search_last_q"] = q
     try:
-        results = search_corps(q)
+        corps = load_corp_list()
+        results = search_corps(q, corps)
     except requests.exceptions.ConnectionError:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
-        st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
-        st.session_state["_conn_failed"] = True
-        st.error(
-            "DART API 서버에 연결할 수 없습니다. "
-            "일시적 장애일 수 있으니 아래 **연결 재시도** 버튼을 눌러주세요."
-        )
+        st.error("DART API 서버에 연결할 수 없습니다. 네트워크 상태를 확인하세요.")
         return
     except requests.exceptions.Timeout:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
-        st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
         st.error("DART API 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.")
         return
     except requests.exceptions.HTTPError as e:
@@ -2983,20 +2586,16 @@ def _run_search(q: str, force: bool = False) -> None:
     except Exception as e:
         st.session_state["selected_corp"] = None
         st.session_state["_search_no_result"] = ""
-        st.session_state["_search_last_q"] = None      # 오류 시 재시도 허용
         st.error(f"기업 목록 조회 중 오류 발생: {e}")
         return
-    st.session_state["_conn_failed"] = False
-    st.session_state["_corp_src"] = str(_KRX_META.get("source", ""))
     if results:
-        # DART 계열 API는 8자리 corp_code 가 필요 → 선택 시점에 지연 매핑
-        st.session_state["selected_corp"]     = attach_corp_code(results[0])
+        st.session_state["selected_corp"]     = results[0]
         st.session_state["_search_no_result"] = ""
     else:
         st.session_state["selected_corp"]     = None
         st.session_state["_search_no_result"] = q
 def main() -> None:
-    if not DART_KEY and not KRX_KEY:
+    if not DART_KEY:
         st.error(
             "**DART API 키가 설정되지 않았습니다.**\n\n"
             "프로젝트 루트의 `secrets.toml` 파일에 아래 내용을 입력하세요:\n\n"
@@ -3005,16 +2604,7 @@ def main() -> None:
             "```\n\n"
             "DART API 키 발급: [DART OpenAPI](https://opendart.fss.or.kr/uat/uia/egovLoginUsr.do) "
             "→ 회원가입 → API 신청 (무료)\n\n"
-            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 위 내용을 붙여넣기\n\n"
-            "---\n"
-            "상장종목 목록을 KRX 오픈API로 받으려면 `KRX_KEY` 도 함께 등록하세요:\n\n"
-            "```toml\n"
-            "DART_KEY = \"발급받은 DART 오픈API 키\"\n"
-            "KRX_KEY  = \"발급받은 KRX 오픈API 인증키\"\n"
-            "```\n\n"
-            "KRX 인증키 발급: [KRX Data Marketplace](https://openapi.krx.co.kr) "
-            "→ 회원가입 → API 인증키 신청 → **종목기본정보(유가증권·코스닥·코넥스) 이용신청 승인** "
-            "(승인 전에는 401이 반환됩니다)"
+            "**Streamlit Cloud 배포 시:** 앱 설정 → Secrets 탭에 위 내용을 붙여넣기"
         )
         st.stop()
     # 스티키 헤더
@@ -3045,65 +2635,16 @@ def main() -> None:
                 label_visibility="collapsed",
             )
         with col_btn:
-            # on_change 콜백이 이미 같은 검색어를 처리했다면 _run_search 내부에서 무시됨
             if st.button("검색", use_container_width=True):
                 _run_search(st.session_state.get("_search_input", ""))
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # 연결 실패 시 캐시를 비우고 재시도할 수 있는 진단 패널
-    if st.session_state.get("_conn_failed"):
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            if st.button("🔄 연결 재시도", use_container_width=True):
-                load_corp_list.clear()
-                load_krx_corp_list.clear()
-                load_dart_corp_records.clear()
-                dart_code_map.clear()
-                _corp_index.clear()
-                _dart_sessions.clear()
-                _DART_OK_SESSION["idx"] = 0
-                st.session_state["_conn_failed"] = False
-                st.session_state["_search_last_q"] = None
-                _run_search(st.session_state.get("_search_input", ""), force=True)
-                st.rerun()
-        with c2:
-            detail = dart_connection_error_detail()
-            if detail:
-                with st.expander("연결 실패 상세"):
-                    st.code(detail)
-
     corp = st.session_state.get("selected_corp")
-    if corp and not corp.get("corp_code"):
-        corp = attach_corp_code(corp)
-        st.session_state["selected_corp"] = corp
     no_result_q = st.session_state.get("_search_no_result", "")
     if no_result_q:
         st.warning(f"검색 결과가 없습니다: **{no_result_q}**")
     if not corp:
-        _src = corp_list_source()
-        _hint = ""
-        if _src == "KRX":
-            _hint = f'  ·  KRX 상장종목 {_KRX_META.get("count", 0):,}건 (기준일 {_KRX_META.get("bas_dd", "-")})'
-            if _KRX_META.get("partial"):
-                _hint += f'  ·  ⚠ {_KRX_META["partial"]} 조회 실패'
-        elif _src == "DART":
-            _hint = "  ·  DART 기업목록 사용 중 (KRX_KEY 미설정 또는 조회 실패)"
-        st.info(f"회사명 또는 종목코드를 입력하여 검색하세요.{_hint}")
-        return
-
-    if not corp.get("corp_code"):
-        st.error(
-            f"**{corp['corp_name']}** 의 DART 기업코드(corp_code)를 찾지 못했습니다. "
-            "재무·공시·주주 데이터는 DART 기업코드가 있어야 조회됩니다."
-        )
-        if st.button("🔄 DART 기업코드 매핑 다시 받기"):
-            load_dart_corp_records.clear()
-            dart_code_map.clear()
-            st.session_state["selected_corp"] = attach_corp_code(corp)
-            st.rerun()
-        if _LAST_ERRORS:
-            with st.expander("진단 로그"):
-                st.code("\n".join(_LAST_ERRORS[-10:]))
+        st.info("회사명 또는 종목코드를 입력하여 검색하세요.")
         return
 
     ov = fetch_company_overview(corp["corp_code"], corp.get("stock_code", ""))
@@ -3118,8 +2659,8 @@ def main() -> None:
         with st.spinner("적정주가 산정 중..."):
             _fv = compute_fair_values(
                 corp["corp_code"], corp.get("stock_code", ""),
-                ov.get("corp_cls_raw") or corp.get("corp_cls", "Y"),
-                _wacc, _tg, _fcfg, _years,
+                ov.get("corp_cls_raw", "Y"),
+                _wacc, _tg, _fcfg, _years, _CACHE_VER,
             )
 
     # ── 회사 정보 카드 ────────────────────────────────────────────────────
@@ -3272,7 +2813,7 @@ def main() -> None:
             render_stock_chart(
                 corp.get("stock_code", ""),
                 corp["corp_name"],
-                ov.get("corp_cls_raw") or corp.get("corp_cls", "Y"),
+                ov.get("corp_cls_raw", "Y"),
                 corp_code=corp.get("corp_code", ""),
             )
         except Exception as e:
